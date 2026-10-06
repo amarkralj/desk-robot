@@ -20,9 +20,10 @@ if _ENV_FILE.is_file():
 # The robot's name — the wake word is "hey <name>".
 ROBOT_NAME = "Rocky"
 
-# Your name — Rocky calls you this. Set HUMAN_NAME in server/.env so it
-# stays out of the repo; "friend" until you do.
-HUMAN_NAME = os.environ.get("HUMAN_NAME", "friend")
+# Your name — Rocky calls you this. Set it in the dashboard (Settings > Rocky; saved in server/settings.json), or as
+# HUMAN_NAME in server/.env; "friend" until you do. Read once at start: the character prompt is built from it.
+from . import settings as _settings
+HUMAN_NAME = _settings.load()["rocky"]["human_name"] or os.environ.get("HUMAN_NAME", "friend")
 
 # Language model. The brain speaks the OpenAI-style chat API, which
 # OpenRouter, Anthropic and OpenAI all serve, so pick a provider here and
@@ -114,6 +115,9 @@ STT_THREADS = 8          # CPU threads for transcription (0 = library default of
 STT_PROMPT = f"Hey {ROBOT_NAME}. {ROBOT_NAME} is a robot."  # name hint for the model
 MIC_SOURCE = "auto"      # "robot" = the robot's mic, "mac" = MIC_DEVICE below,
                          # "auto" = robot when it's connected, else this computer
+SPEAKER_OUT = "robot"    # where Rocky's voice plays: "robot" = the robot's speaker when it's connected
+                         # (else this computer), "computer" = always this computer. The live view
+                         # switches it too (until restart).
 MIC_DEVICE = os.environ.get("MIC_DEVICE") or None  # local input by name (set MIC_DEVICE in
                          # server/.env); None = system default. List devices: python -m sounddevice
 # Speech detection (server/brain/turn.py). A Silero VAD model decides whether
@@ -163,7 +167,8 @@ EMOTIONS = [
 # Camera. The robot streams small JPEGs while connected; the live view
 # is at http://localhost:<LIVE_VIEW_PORT>/ on this computer.
 CAMERA_FPS = 10
-LIVE_VIEW_PORT = 8766
+LIVE_VIEW_PORT = 8767   # the brain's own page + API. The launcher (server/launcher.py) serves the dashboard on 8766
+                        # and passes these through; without the launcher, open this port directly
 LIVE_VIEW_BIND = "127.0.0.1"  # this computer only. "0.0.0.0" would show the camera to the whole LAN.
 SEND_CAMERA_TO_BRAIN = True  # let Rocky see the camera when a question is about seeing
 # A frame is attached only when the question is about seeing (any of these
@@ -187,16 +192,38 @@ TRACKING = False
 TRACK_ON_PHRASES = ["track me", "follow me", "watch me", "keep your eyes on me", "look at me"]
 TRACK_OFF_PHRASES = ["stop tracking", "stop following", "stop watching", "stop looking at me"]
 # What he says when tracking starts/stops: personality.py, LINES.
-TRACK_HFOV = 62.0          # camera field of view, degrees (OV2640 stock lens)
-TRACK_VFOV = 48.0
-TRACK_GAIN = 0.5           # fraction of the error corrected per frame (lower = calmer)
-TRACK_DEADBAND = 0.10      # ignore errors smaller than this fraction of half-frame
+# Camera field of view in HEAD degrees (how far the head turns to move something edge to edge), along the sensor's
+# long and short sides; the tracker swaps them itself when CAMERA_ROTATE turns the picture 90 degrees.
+# Measured on the V2 head 2026-09-30 by moving the head and matching the room between frames: ~2.1 px per head
+# degree both ways in the 240x320 upright picture. (Was 62 / 48, the stock lens on paper: 2.4x too narrow, so the
+# tracker only went about 40% of the way to the face each step.)
+TRACK_HFOV = 104.0
+TRACK_VFOV = 92.0
+# The V2 head holds the camera on its side, so the brain turns every frame upright as it arrives (before the
+# live view, face tracking and Rocky's own look at the camera use it). Degrees clockwise: 0, 90, 180 or 270.
+# The live view's Rotate button changes it until restart.
+CAMERA_ROTATE = 270
+# The picture also came out mirrored left-right (2026-09-30: panning the head right moved the room right in the
+# frame, where a true view moves it left). Mirroring it back keeps Rocky's left and right true, for face tracking
+# and for what he says he sees.
+CAMERA_MIRROR = True
+TRACK_GAIN = 0.5           # fraction of the way to the face the head is sent per frame (lower = calmer)
+TRACK_DEADBAND = 0.05      # ignore errors smaller than this fraction of half-frame (~3 deg with the wide lens)
 TRACK_PAN_SIGN = 1         # flip to -1 if the head turns AWAY from you
 TRACK_TILT_SIGN = 1        # flip to -1 if it nods the wrong way
-TRACK_PAN_LIMIT = 60.0     # must match PAN_MIN/MAX_DEG in firmware config.h
-TRACK_TILT_MIN = -60.0     # must match TILT_MIN/MAX_DEG in firmware config.h
-TRACK_TILT_MAX = 0.0
+TRACK_PAN_LIMIT = 110.0    # must match PAN_MIN/MAX_DEG in firmware config.h (38/30 gears)
+TRACK_TILT_MIN = -85.0     # must match TILT_MIN/MAX_DEG in firmware config.h (V2 neck, 2026-09-30)
+TRACK_TILT_MAX = 85.0      # (0 on the V1 bracket, which couldn't look above level)
 TRACK_LOST_SECONDS = 4.0   # no face this long → idle glances resume
+# Face tracking's own tilt range, inside the head's +-85: plenty to follow a face without nodding right down.
+TRACK_FOLLOW_TILT = (-30.0, 60.0)
+# A frame shows where the head was a moment ago (exposure, JPEG, WiFi), and the head is still moving to where it
+# was last sent. The tracker keeps a copy of the firmware's motion (speed + acceleration limits, firmware config.h)
+# to know where the head pointed when each frame was taken, so it aims at where the face really is instead of
+# piling fresh moves on top of ones the camera hasn't seen yet (that overshoots and oscillates).
+TRACK_LATENCY_S = 0.3      # camera → brain delay plus servo lag, seconds (measured 0.18-0.38, 2026-09-30)
+TRACK_PAN_SPEED, TRACK_PAN_ACCEL = 150.0, 450.0     # = PAN_MAX_SPEED, PAN_ACCEL
+TRACK_TILT_SPEED, TRACK_TILT_ACCEL = 160.0, 600.0   # = TILT_MAX_SPEED, TILT_ACCEL
 
 # How many conversation turns to remember before forgetting the oldest.
 MAX_HISTORY_TURNS = 20

@@ -14,6 +14,9 @@ firmware/include/secrets.h
 .env.*
 !.env.example
 
+# Dashboard settings: personal (your location, your name)
+server/settings.json
+
 # macOS and editors
 .DS_Store
 .vscode/
@@ -34,3 +37,6 @@ docs/cad/
 
 # Codex CLI project config (written by the Fusion MCP add-in)
 .codex/
+
+# Custom PCBs (KiCad, Gerbers): sold with the print files, not in the repo
+pcb/

@@ -123,6 +123,8 @@ void Link::handleMessage(const char* json) {
     cmd = String("speak_begin ") + String(doc["bytes"] | 0);
   } else if (!strcmp(type, "speak_end")) {
     cmd = type;
+  } else if (!strcmp(type, "mouth")) {
+    cmd = String("mouth ") + String(doc["level"] | -1.0f, 3);
   } else if (!strcmp(type, "volume")) {
     cmd = String("volume ") + String(doc["level"] | 0.5f, 2);
   } else if (!strcmp(type, "mic")) {
@@ -131,6 +133,9 @@ void Link::handleMessage(const char* json) {
     cmd = String("glance ") + ((doc["on"] | true) ? "on" : "off");
   } else if (!strcmp(type, "asleep")) {
     cmd = String("sleep ") + ((doc["on"] | false) ? "on" : "off");
+  } else if (!strcmp(type, "settings")) {
+    if (onSettings_) onSettings_(json);   // structured: not a console command
+    return;
   } else if (!strcmp(type, "stream")) {
     cmd = String("stream ") + ((doc["on"] | false) ? "on " : "off ") + String(doc["fps"] | 10.0f, 1);
   } else {

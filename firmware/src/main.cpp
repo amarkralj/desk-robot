@@ -10,6 +10,7 @@
 #include "camera.h"
 #include "config.h"
 #include "face.h"
+#include "home_screen.h"
 #include "link.h"
 #include "mic.h"
 #include "servo_neck.h"
@@ -23,10 +24,22 @@
 #endif
 
 // 1.3" SH1106 128x64 OLED over hardware I2C (SDA=D4/GPIO5, SCL=D5/GPIO6).
-// R2 = rotated 180 degrees: the OLED is mounted upside down on the head.
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, U8X8_PIN_NONE);
+// OLED_FLIP (config.h) picks R2 = rotated 180 degrees for an upside-down mount.
+#if OLED_SSD1309_242
+U8G2_SSD1309_128X64_NONAME0_F_HW_I2C u8g2(OLED_FLIP ? U8G2_R2 : U8G2_R0, U8X8_PIN_NONE);
+#else
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(OLED_FLIP ? U8G2_R2 : U8G2_R0, U8X8_PIN_NONE);
+#endif
 
 Face face(u8g2);
+HomeScreen home(u8g2);
+
+// What the OLED shows. Asleep = the home screen (clock, date, weather); awake = the face. Going to sleep shows the
+// sleep face for SLEEP_FACE_MS first. Power-up starts on the home screen; the brain wakes him ("hey Rocky").
+enum class Screen : uint8_t { Home, Face, Sleeping };
+Screen screen = Screen::Home;
+uint32_t sleepFaceUntil = 0;
+constexpr uint32_t SLEEP_FACE_MS = 5000;
 ServoNeck panNeck;
 ServoNeck tiltNeck;
 Link brainLink;
@@ -35,36 +48,72 @@ Mic mic;
 Camera camera;
 uint32_t nextTempMs = 0;
 volatile bool speakDonePending = false;  // set by the speaker task, sent from loop()
+// Talking mouth while the voice plays on the computer instead of our speaker: the brain sends `mouth <level>`
+// (the voice's loudness) ~25 times a second, and -1 when it's done. Stale after MOUTH_TIMEOUT_MS.
+float brainMouthLevel = -1.0f;
+uint32_t brainMouthMs = 0;
+constexpr uint32_t MOUTH_TIMEOUT_MS = 300;
 
 uint32_t lastFrameMs = 0;
 uint32_t nextStateMs = 0;
-bool demoMode = true;  // cycles emotions on its own; off while the brain is connected
+bool demoMode = false; // `demo on`: cycles emotions on its own (to show the faces off without the brain)
 bool brainConnected = false;
 bool glanceWanted = true;  // the brain's `glance on|off` (off while it holds a pose or tracks a face)
+bool assemblyMode = false; // servos held at centre for fitting gears and horns (BOOT button / `assembly`)
 
 // Idle glances only while Rocky is awake and his brain is connected. Asleep,
 // or with no server running, the head stays still.
 void applyGlances() {
-  bool on = brainConnected && !face.asleep() && glanceWanted;
+  bool on = !assemblyMode && brainConnected && !face.asleep() && glanceWanted;
   panNeck.setIdleGlances(on);
   tiltNeck.setIdleGlances(on);
 }
 uint32_t nextDemoEmotionMs = 0;
 uint8_t demoEmotionIdx = 0;
 
+void setAssemblyMode(bool on) {
+  assemblyMode = on;
+  if (on) {
+    panNeck.setTarget(0);
+    tiltNeck.setTarget(0);
+  }
+  applyGlances();
+  Serial.println(on ? F("assembly mode: both servos centred and held. Fit the pan gear and the tilt horn now.")
+                    : F("assembly mode off"));
+}
+
+// What the OLED shows in assembly mode instead of the face.
+void drawAssemblyScreen() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(34, 12, "ASSEMBLY");
+  u8g2.drawStr(10, 26, "servos centred");
+  u8g2.drawStr(10, 38, "+ held. Fit gears");
+  u8g2.drawStr(10, 50, "BOOT again = exit");
+  u8g2.drawFrame(0, 0, 128, 64);
+  u8g2.sendBuffer();
+}
+
 void printHelp() {
   Serial.println(F("desk-robot commands:"));
   Serial.println(F("  emo <name>   neutral|happy|sad|angry|surprised|sleepy|thinking"));
-  Serial.println(F("  pan <deg>    turn head, -60..60 (0 = center)"));
-  Serial.println(F("  tilt <deg>   nod head, -60 (down)..0 (level)"));
+  Serial.println(F("  pan <deg>    turn head, -110 (left)..110 (right), 0 = center"));
+  Serial.println(F("  tilt <deg>   nod head, -85 (down)..85 (up), 0 = level"));
   Serial.println(F("  center       head to center on both axes"));
+  Serial.println(F("  assembly on|off  hold both servos at centre for fitting gears/horns (or BOOT within 5 s of power-up)"));
+  Serial.println(F("  motion pan|tilt <speed> <accel>  tune head motion live (deg/s, deg/s^2)"));
   Serial.println(F("  raw pan|tilt <deg>  calibration move that ignores the limits (watch it!)"));
   Serial.println(F("  blink        blink now"));
   Serial.println(F("  sleep on|off eyes shut, breathing, Z's"));
-  Serial.println(F("  demo on|off  idle life: auto blinks and emotion changes"));
+  Serial.println(F("  demo on|off  wake up and cycle through the faces on his own"));
+  Serial.println(F("  home         clock / weather settings and status"));
+  Serial.println(F("  screen       dump what the OLED shows (hex), for a screenshot"));
+  Serial.println(F("  weather      fetch the weather now"));
+  Serial.println(F("  settings <json>  apply a settings message, as the brain sends it"));
   Serial.println(F("  glance on|off  allow idle head glances (only happen while the brain is connected and he is awake)"));
   Serial.println(F("  volume <0-1> speaker volume"));
   Serial.println(F("  beep         play a test tone through the speaker"));
+  Serial.println(F("  oled off|on | oled <cmd> [arg]  screen power, or a raw SSD1309 command in hex (whine hunting)"));
   Serial.println(F("  mic on|off   stream the microphone to the brain"));
   Serial.println(F("  miclevel     print mic level for 3 s (talk to it)"));
   Serial.println(F("  stream on|off [fps]  stream camera JPEGs to the brain"));
@@ -93,6 +142,10 @@ void handleCommand(String line) {
     } else {
       Serial.println(F("unknown emotion — try: neutral happy sad angry surprised sleepy thinking"));
     }
+  } else if (assemblyMode && (cmd == "pan" || cmd == "tilt")) {
+    Serial.println(F("assembly mode: head held at centre (`assembly off` to leave)"));
+  } else if (cmd == "assembly") {
+    setAssemblyMode(arg == "on");
   } else if (cmd == "pan") {
     panNeck.setTarget(arg.toFloat());
     Serial.printf("pan -> %.0f deg\n", panNeck.target());
@@ -115,13 +168,63 @@ void handleCommand(String line) {
   } else if (cmd == "blink") {
     face.blink();
   } else if (cmd == "sleep") {
-    face.setAsleep(arg == "on");
+    bool on = arg == "on";
+    face.setAsleep(on);
+    if (on) {                   // head home (straight ahead, level) to sleep; the face shows it, then the clock
+      panNeck.setTarget(0);
+      tiltNeck.setTarget(0);
+      if (screen == Screen::Face) {
+        screen = Screen::Sleeping;
+        sleepFaceUntil = millis() + SLEEP_FACE_MS;
+      }
+    } else {
+      screen = Screen::Face;
+      home.restoreDisplay();
+    }
     applyGlances();
     Serial.printf("sleep %s\n", face.asleep() ? "on" : "off");
+  } else if (cmd == "screen") {
+    // what the OLED shows right now, as hex (8 pages x 128 columns, a byte = 8 pixels down), for a screenshot
+    uint8_t* buf = u8g2.getBufferPtr();
+    Serial.print(F("screen:"));
+    for (int i = 0; i < 1024; ++i) Serial.printf("%02x", buf[i]);
+    Serial.println();
+  } else if (cmd == "home") {
+    home.printStatus();
+  } else if (cmd == "weather") {
+    home.refreshWeather();
+    Serial.println(F("weather: fetching (see `home` in a few seconds)"));
+  } else if (cmd == "settings") {
+    if (home.applyJson(arg.c_str())) {
+      if (screen != Screen::Home) home.restoreDisplay();   // brightness for the face
+      Serial.println(F("settings: applied and saved"));
+    } else {
+      Serial.println(F("settings: not valid JSON"));
+    }
+  } else if (cmd == "oled") {
+    // oled off|on, or oled <cmd> [arg] in hex: a raw SSD1309 command for hunting the module's coil whine, e.g.
+    // `oled d5 f0` (display clock: osc freq high nibble, divide low), `oled 81 40` (contrast), `oled d9 22`
+    // (pre-charge). Lasts until the next reboot.
+    if (arg == "off" || arg == "on") {
+      u8g2.setPowerSave(arg == "off");
+      Serial.printf("oled %s\n", arg.c_str());
+    } else {
+      int sp = arg.indexOf(' ');
+      long c = strtol((sp < 0 ? arg : arg.substring(0, sp)).c_str(), nullptr, 16);
+      u8x8_t* u = u8g2.getU8x8();
+      u8x8_cad_StartTransfer(u);
+      u8x8_cad_SendCmd(u, static_cast<uint8_t>(c));
+      if (sp > 0) u8x8_cad_SendArg(u, static_cast<uint8_t>(strtol(arg.substring(sp + 1).c_str(), nullptr, 16)));
+      u8x8_cad_EndTransfer(u);
+      Serial.printf("oled cmd 0x%02lX%s\n", c, sp > 0 ? (" " + arg.substring(sp + 1)).c_str() : "");
+    }
   } else if (cmd == "speak_begin") {
     speaker.beginSpeech(static_cast<size_t>(arg.toInt()));
   } else if (cmd == "speak_end") {
     speaker.endSpeech();
+  } else if (cmd == "mouth") {
+    brainMouthLevel = arg.toFloat();   // no print: it comes 25 times a second
+    brainMouthMs = millis();
   } else if (cmd == "volume") {
     speaker.setVolume(arg.toFloat());
     Serial.printf("volume -> %.2f\n", arg.toFloat());
@@ -162,6 +265,20 @@ void handleCommand(String line) {
       camera.setStreaming(was, 10);
       Serial.printf("snap: %u bytes (%s)\n", n, n ? "ok" : "no frame");
     }
+  } else if (cmd == "motion") {
+    // motion pan|tilt <maxSpeed> <accel>: live tuning (until reboot); no args = show
+    int sp1 = arg.indexOf(' ');
+    String axis = sp1 < 0 ? arg : arg.substring(0, sp1);
+    ServoNeck* n = axis == "pan" ? &panNeck : axis == "tilt" ? &tiltNeck : nullptr;
+    if (n && sp1 > 0) {
+      String rest = arg.substring(sp1 + 1);
+      int sp2 = rest.indexOf(' ');
+      float v = rest.toFloat();
+      float a = sp2 > 0 ? rest.substring(sp2 + 1).toFloat() : n->accel();
+      if (v > 0 && a > 0) n->setMotion(v, a);
+    }
+    Serial.printf("motion pan %.0f deg/s %.0f deg/s^2 | tilt %.0f deg/s %.0f deg/s^2\n",
+                  panNeck.maxSpeed(), panNeck.accel(), tiltNeck.maxSpeed(), tiltNeck.accel());
   } else if (cmd == "temp") {
     Serial.printf("chip %.1f C\n", temperatureRead());
   } else if (cmd == "glance") {
@@ -170,7 +287,7 @@ void handleCommand(String line) {
     Serial.printf("glance %s\n", glanceWanted ? "on" : "off");
   } else if (cmd == "demo") {
     demoMode = (arg == "on");
-    face.setIdle(demoMode);
+    if (demoMode) handleCommand("sleep off");
     Serial.printf("demo %s\n", demoMode ? "on" : "off");
   } else {
     Serial.println(F("unknown command — type `help`"));
@@ -188,19 +305,27 @@ void setup() {
   ESP32PWM::allocateTimer(3);
 
   face.begin();
-  panNeck.begin(PIN_SERVO_PAN, PAN_MIN_DEG, PAN_MAX_DEG, PAN_MAX_SPEED,
-                SERVO_RELAX_MS, PAN_TRIM_DEG, /*glanceRange=*/25.0f);
-  tiltNeck.begin(PIN_SERVO_TILT, TILT_MIN_DEG, TILT_MAX_DEG, TILT_MAX_SPEED,
-                 SERVO_RELAX_MS, TILT_TRIM_DEG, /*glanceRange=*/10.0f,
+  // Camera first: the servos jump to home when they start, and that current
+  // surge on USB power can brown out the camera's probe.
+  if (camera.begin()) Serial.println(F("camera: ready"));
+  panNeck.begin(PIN_SERVO_PAN, PAN_MIN_DEG, PAN_MAX_DEG, PAN_MAX_SPEED, PAN_ACCEL,
+                SERVO_RELAX_MS, PAN_TRIM_DEG, /*glanceRange=*/25.0f,
+                PAN_INVERT, PAN_GEAR_RATIO);
+  delay(300);  // one servo surge at a time
+  tiltNeck.begin(PIN_SERVO_TILT, TILT_MIN_DEG, TILT_MAX_DEG, TILT_MAX_SPEED, TILT_ACCEL,
+                 TILT_RELAX_MS, TILT_TRIM_DEG, /*glanceRange=*/10.0f,
                  TILT_INVERT);
+  tiltNeck.setRelaxWithin(TILT_RELAX_WITHIN_DEG);
 
   speaker.begin(PIN_I2S_BCLK, PIN_I2S_LRC, PIN_I2S_DIN, SPEAKER_VOLUME,
                 []() { speakDonePending = true; });
   mic.begin(PIN_PDM_CLK, PIN_PDM_DATA, MIC_GAIN);
-  if (camera.begin()) Serial.println(F("camera: ready"));
 
-  demoMode = true;
-  face.setIdle(true);
+  pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
+
+  face.setIdle(true);       // blinks and glances of the eyes whenever the face is up
+  face.setAsleep(true);     // starts on the home screen
+  home.begin();
   applyGlances();  // off: no brain yet
   nextDemoEmotionMs = millis() + 8000;
 
@@ -209,22 +334,20 @@ void setup() {
 
 #if HAVE_BRAIN
   brainLink.onAudio([](const uint8_t* pcm, size_t len) { speaker.feed(pcm, len); });
+  brainLink.onSettings([](const char* json) { handleCommand(String("settings ") + json); });
 #ifndef ROBOT_TOKEN
 #define ROBOT_TOKEN ""
 #endif
   brainLink.begin(WIFI_SSID, WIFI_PASS, BRAIN_HOST, BRAIN_PORT, ROBOT_TOKEN,
              [](const String& cmd) { handleCommand(cmd); },
              [](bool connected) {
-               // The brain picks emotions while it's connected; the demo
-               // cycle takes over again if it goes away. Blinks stay on
-               // either way; idle glances only while connected and awake.
+               // The brain says whether he's awake when it connects. If it goes away while he's awake, he can't hear
+               // any more: he goes to sleep (sleep face, then the clock). Idle glances only while connected and awake.
                brainConnected = connected;
-               demoMode = !connected;
-               if (connected) {
-                 face.setEmotion(Emotion::Happy);
-               }
+               if (!connected && screen == Screen::Face && !demoMode) handleCommand("sleep on");
                applyGlances();
              });
+  home.startClock();         // internet time, once WiFi is up
 #else
   Serial.println(F("no include/secrets.h — USB-only mode (see secrets.h.example)"));
 #endif
@@ -238,7 +361,7 @@ void loop() {
     if (c == '\n' || c == '\r') {
       if (!lineBuf.isEmpty()) handleCommand(lineBuf);
       lineBuf = "";
-    } else if (lineBuf.length() < 80) {
+    } else if (lineBuf.length() < 512) {     // long enough for a `settings {...}` line
       lineBuf += c;
     }
   }
@@ -286,13 +409,42 @@ void loop() {
     nextDemoEmotionMs = now + random(6000, 12000);
   }
 
-  if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
+  // BOOT button: enters assembly mode in the first few seconds after power-up, and leaves it any time.
+  {
+    static bool wasDown = false;
+    bool down = digitalRead(PIN_BOOT_BUTTON) == LOW;
+    if (down && !wasDown) {
+      if (assemblyMode) setAssemblyMode(false);
+      else if (now < ASSEMBLY_WINDOW_MS) setAssemblyMode(true);
+    }
+    wasDown = down;
+  }
+
+  if (screen == Screen::Sleeping && static_cast<int32_t>(now - sleepFaceUntil) >= 0) screen = Screen::Home;
+
+  if (assemblyMode) {
+    static uint32_t lastAsmDrawMs = 0;
+    if (now - lastAsmDrawMs >= 500) { lastAsmDrawMs = now; drawAssemblyScreen(); }
+  } else if (screen == Screen::Home) {
+    static uint32_t lastHomeMs = 0;
+    if (now - lastHomeMs >= 500) { lastHomeMs = now; home.draw(); }
+  } else if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
     lastFrameMs = now;
-    face.setTalking(speaker.speaking(), speaker.level());
+    bool brainTalking = brainMouthLevel >= 0 && millis() - brainMouthMs < MOUTH_TIMEOUT_MS;  // not `now`: may predate it
+    if (speaker.speaking()) face.setTalking(true, speaker.level());
+    else face.setTalking(brainTalking, brainTalking ? brainMouthLevel : 0.0f);
     face.update(now);
-    // While one axis swings, keep the other powered so it can't sag.
-    if (panNeck.moving()) tiltNeck.hold();
-    if (tiltNeck.moving()) panNeck.hold();
+  }
+
+  // Servos on their own steady 50 Hz tick (not the face's 30 fps), so every
+  // servo pulse gets a fresh, evenly spaced position.
+  static uint32_t lastServoMs = 0;
+  if (now - lastServoMs >= SERVO_UPDATE_MS) {
+    lastServoMs = now;
+    // While one axis swings, keep the other powered so it can't sag. In assembly
+    // mode both stay powered at centre so they can't be turned by hand.
+    if (panNeck.moving() || assemblyMode) tiltNeck.hold();
+    if (tiltNeck.moving() || assemblyMode) panNeck.hold();
     panNeck.update(now);
     tiltNeck.update(now);
   }

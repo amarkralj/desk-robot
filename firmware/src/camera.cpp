@@ -14,6 +14,32 @@ static const int PIN_VSYNC = 38, PIN_HREF = 47, PIN_PCLK = 13;
 static const size_t LATEST_CAP = 64 * 1024;  // QVGA JPEGs are ~8-20 KB
 
 bool Camera::begin() {
+  latest_ = static_cast<uint8_t*>(ps_malloc(LATEST_CAP));
+  latestCap_ = latest_ ? LATEST_CAP : 0;
+  if (latest_ == nullptr) {
+    Serial.println(F("camera: no PSRAM for frames"));
+    return false;
+  }
+  for (int i = 0; i < 3 && !ok_; ++i) {   // a supply dip at boot can make the first probe miss
+    if (i > 0) { esp_camera_deinit(); delay(200); }
+    ok_ = initSensor();
+  }
+  if (!ok_) Serial.println(F("camera: init failed, will keep retrying"));
+  lastGoodMs_ = lastInitTryMs_ = millis();
+  xTaskCreatePinnedToCore(taskEntry, "camera", 4096, this, 1, nullptr, 0);
+  return ok_;
+}
+
+void Camera::restart(const char* why) {
+  esp_camera_deinit();
+  vTaskDelay(pdMS_TO_TICKS(100));
+  ok_ = initSensor();
+  restarts_ = restarts_ + 1;
+  lastGoodMs_ = lastInitTryMs_ = millis();
+  Serial.printf("camera: %s -> restart %s (#%u)\n", why, ok_ ? "ok" : "failed", static_cast<unsigned>(restarts_));
+}
+
+bool Camera::initSensor() {
   camera_config_t cfg = {};
   cfg.ledc_channel = LEDC_CHANNEL_4;  // 0-3 are taken by the servos
   cfg.ledc_timer = LEDC_TIMER_2;
@@ -41,21 +67,14 @@ bool Camera::begin() {
   cfg.fb_location = CAMERA_FB_IN_PSRAM;
   cfg.grab_mode = CAMERA_GRAB_LATEST;
 
-  if (esp_camera_init(&cfg) != ESP_OK) {
-    Serial.println(F("camera: init failed"));
-    return false;
-  }
+  if (esp_camera_init(&cfg) != ESP_OK) return false;
   sensor_t* s = esp_camera_sensor_get();
   if (s != nullptr) {
     s->set_vflip(s, CAMERA_VFLIP ? 1 : 0);
     s->set_hmirror(s, CAMERA_HMIRROR ? 1 : 0);
   }
 
-  latest_ = static_cast<uint8_t*>(ps_malloc(LATEST_CAP));
-  latestCap_ = latest_ ? LATEST_CAP : 0;
-  ok_ = latest_ != nullptr;
-  if (ok_) xTaskCreatePinnedToCore(taskEntry, "camera", 4096, this, 1, nullptr, 0);
-  return ok_;
+  return true;
 }
 
 void Camera::setStreaming(bool on, float fps) {
@@ -81,7 +100,14 @@ void Camera::taskEntry(void* self) { static_cast<Camera*>(self)->task(); }
 
 void Camera::task() {
   for (;;) {
+    uint32_t now = millis();
+    if (!ok_) {                                   // not up yet (or a restart failed): retry every 3 s
+      if (now - lastInitTryMs_ >= 3000) restart("not running");
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
     if (!streaming_) {
+      lastGoodMs_ = now;                          // idle is not a stall
       vTaskDelay(pdMS_TO_TICKS(50));
       continue;
     }
@@ -97,6 +123,10 @@ void Camera::task() {
         captured_ = captured_ + 1;
       }
       esp_camera_fb_return(fb);
+      lastGoodMs_ = millis();
+    } else if (millis() - lastGoodMs_ > 2500) {
+      restart("no frames for 2.5 s");
+      continue;
     }
     uint32_t spent = millis() - t0;
     uint32_t interval = intervalMs_;

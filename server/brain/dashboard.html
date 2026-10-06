@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{name} · dashboard</title>
+<meta name="referrer" content="no-referrer">
+<style>
+  :root {
+    --void: #06080d;
+    --panel: #0d121b;
+    --panel-2: #111826;
+    --line: #1d2533;
+    --line-strong: #2c3648;
+    --ink: #ece6d9;
+    --muted: #8a94a6;
+    --astro: #ff4a3d;          /* astrophage: attention, and Rocky's voice while he speaks */
+    --astro-glow: rgba(255, 74, 61, .35);
+    --amber: #f2b45c;          /* warm hull light: Rocky's side of things */
+    --amber-dim: rgba(242, 180, 92, .16);
+    --ok: #8fd19e;
+    /* System fonts only: the page makes no requests beyond this computer. */
+    --display: "Avenir Next", "Helvetica Neue", sans-serif;
+    --body: "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; color: var(--ink); background: var(--void);
+    font: 14px/1.5 var(--body); accent-color: var(--amber);
+    background-image:
+      radial-gradient(1.2px 1.2px at 12% 18%, rgba(255,255,255,.55) 0, transparent 1.5px),
+      radial-gradient(1px 1px at 78% 9%, rgba(255,255,255,.45) 0, transparent 1.5px),
+      radial-gradient(1px 1px at 33% 62%, rgba(255,255,255,.35) 0, transparent 1.5px),
+      radial-gradient(1.5px 1.5px at 88% 41%, rgba(255,255,255,.5) 0, transparent 2px),
+      radial-gradient(1px 1px at 57% 85%, rgba(255,255,255,.3) 0, transparent 1.5px),
+      radial-gradient(1px 1px at 5% 92%, rgba(255,255,255,.4) 0, transparent 1.5px),
+      radial-gradient(60vw 45vh at 105% 110%, rgba(255, 74, 61, .10), transparent 70%);
+    background-attachment: fixed;
+  }
+  a { color: var(--amber); }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .visually-hidden { position: absolute; clip-path: inset(50%); overflow: hidden; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; white-space: nowrap; }
+
+  .console { max-width: 1240px; margin: 0 auto; padding: 22px 24px 48px; }
+
+  /* ── header ─────────────────────────────────────────────────────────── */
+  .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px 28px; flex-wrap: wrap;
+         padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .eyebrow { font: 10px var(--display); letter-spacing: .28em; text-transform: uppercase; color: var(--muted); }
+  h1 { margin: 6px 0 0; font: 22px var(--display); letter-spacing: .22em; text-transform: uppercase; }
+  .vitals { list-style: none; margin: 0; padding: 0; display: flex; gap: 22px; flex-wrap: wrap; }
+  .vitals li { display: flex; flex-direction: column; gap: 3px; min-width: 60px; }
+  .k { font: 10px var(--display); letter-spacing: .22em; text-transform: uppercase; color: var(--muted); }
+  .vitals .v { font: 500 14px var(--mono); color: var(--ink); }
+  .v.warn { color: var(--astro); }
+  .v.good { color: var(--amber); }
+
+  .server { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; font: 500 12px var(--mono); padding: 6px 12px; border-radius: 999px;
+          border: 1px solid var(--line-strong); color: var(--muted); }
+  .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on { color: var(--ink); border-color: rgba(242,180,92,.5); }
+  .pill.on::before { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+  .pill.busy::before { background: var(--amber); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+
+  /* ── tabs ───────────────────────────────────────────────────────────── */
+  .tabs { display: flex; gap: 4px; margin: 18px 0 20px; border-bottom: 1px solid var(--line); }
+  .tabs [role=tab] { font: 11px var(--display); letter-spacing: .24em; text-transform: uppercase; color: var(--muted);
+                     background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 16px 9px; margin-bottom: -1px; }
+  .tabs [role=tab]:hover { color: var(--ink); border-color: var(--line-strong); }
+  .tabs [role=tab][aria-selected=true] { color: var(--amber); border-bottom-color: var(--amber); }
+  [role=tabpanel][hidden] { display: none; }
+
+  /* ── layout ─────────────────────────────────────────────────────────── */
+  .deck { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); gap: 22px; align-items: start; }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .deck, .grid2 { grid-template-columns: 1fr; } }
+
+  .label { margin: 0 0 12px; font: 10px var(--display); letter-spacing: .28em; text-transform: uppercase; color: var(--muted);
+           display: flex; justify-content: space-between; align-items: baseline; gap: 6px 12px; flex-wrap: wrap; }
+  .label .sub { font: 11px var(--mono); letter-spacing: 0; text-transform: none; color: var(--muted); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+  .stack > .card + .card { margin-top: 16px; }
+
+  /* ── stopped notice ─────────────────────────────────────────────────── */
+  .stopped { text-align: center; padding: 56px 24px; }
+  .stopped h2 { font: 15px var(--display); letter-spacing: .2em; text-transform: uppercase; margin: 0 0 10px; }
+  .stopped p { color: var(--muted); margin: 0 auto 20px; max-width: 46ch; }
+
+  /* ── viewport ───────────────────────────────────────────────────────── */
+  .viewport { position: relative; aspect-ratio: 4 / 3; background: #000; border: 1px solid var(--line-strong); border-radius: 4px; overflow: hidden;
+              transition: box-shadow .35s, border-color .35s; }
+  .viewport.speaking { border-color: var(--astro); box-shadow: 0 0 0 1px var(--astro), 0 0 46px var(--astro-glow); }
+  .viewport img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  .viewport::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+                     background: repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 3px); mix-blend-mode: overlay; }
+  .corner { position: absolute; width: 18px; height: 18px; border: 2px solid var(--amber); pointer-events: none; opacity: .9; }
+  .corner.tl { top: 8px; left: 8px; border-right: 0; border-bottom: 0; }
+  .corner.tr { top: 8px; right: 8px; border-left: 0; border-bottom: 0; }
+  .corner.bl { bottom: 8px; left: 8px; border-right: 0; border-top: 0; }
+  .corner.br { bottom: 8px; right: 8px; border-left: 0; border-top: 0; }
+  .reticle { position: absolute; inset: 0; pointer-events: none; }
+  .horizon, .meridian { position: absolute; background: rgba(242, 180, 92, .45); transition: top .4s, left .4s; }
+  .horizon { left: 12%; right: 12%; height: 1px; top: 50%; }
+  .meridian { top: 14%; bottom: 14%; width: 1px; left: 50%; }
+  .horizon::after { content: ""; position: absolute; left: 50%; top: -5px; width: 10px; height: 10px; margin-left: -5px; border: 1px solid var(--amber); border-radius: 50%; background: rgba(6,8,13,.5); }
+  .readout { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 14px; font: 12px var(--mono); color: var(--amber);
+             background: rgba(6,8,13,.55); padding: 4px 8px; border-radius: 3px; }
+  .readout .off { color: var(--muted); }
+  .nocam { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; text-align: center; padding: 24px;
+           color: var(--muted); font: 13px var(--mono); background: var(--void); }
+  .viewport.dark .nocam { display: flex; }
+  .viewport.dark img { visibility: hidden; }
+
+  /* ── hearing ────────────────────────────────────────────────────────── */
+  .sonar { position: relative; height: 84px; border: 1px solid var(--line); border-radius: 4px; background: #090c13; overflow: hidden; }
+  .sonar canvas { display: block; width: 100%; height: 100%; }
+  .sonar-state { font: 10px var(--display); letter-spacing: .22em; text-transform: uppercase; color: var(--muted); }
+  .sonar-state.hot { color: var(--amber); }
+  .sonar-state.astro { color: var(--astro); }
+  .line { display: grid; grid-template-columns: 64px 1fr; gap: 10px; margin: 12px 0 0; align-items: baseline; }
+  .line .who { font: 10px var(--display); letter-spacing: .2em; text-transform: uppercase; color: var(--muted); padding-top: 3px; }
+  .line.said .who { color: var(--amber); }
+  .line .text { color: var(--ink); min-height: 1.4em; }
+  .line .text:empty::before { content: "—"; color: var(--muted); }
+
+  /* ── controls ───────────────────────────────────────────────────────── */
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .field { display: grid; grid-template-columns: 52px 1fr 54px; gap: 12px; align-items: center; margin: 10px 0; }
+  .field .v { font: 13px var(--mono); color: var(--amber); text-align: right; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--line-strong); }
+  input[type=range]::-moz-range-track { height: 2px; background: var(--line-strong); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -6px; border-radius: 50%; background: var(--amber); border: 2px solid var(--void); box-shadow: 0 0 0 1px var(--amber); cursor: pointer; }
+  input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--amber); border: 2px solid var(--void); cursor: pointer; }
+  button { font: 500 12px var(--body); letter-spacing: .04em; color: var(--ink); background: transparent; border: 1px solid var(--line-strong);
+           border-radius: 4px; padding: 7px 12px; cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
+  button:hover { border-color: var(--amber); }
+  button.active, button.primary { background: var(--amber); color: var(--void); border-color: var(--amber); }
+  button.primary:hover { filter: brightness(1.08); }
+  button.astro:hover { border-color: var(--astro); color: var(--astro); }
+  button:disabled { opacity: .45; cursor: default; }
+  .faces { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px; }
+  .faces button { min-width: 0; padding-left: 6px; padding-right: 6px; text-transform: capitalize; }
+  input[type=text], input[type=search], input[type=time], select {
+    font: 14px var(--body); color: var(--ink); background: #090c13; border: 1px solid var(--line-strong); border-radius: 4px; padding: 8px 10px; }
+  input[type=text], input[type=search] { flex: 1; min-width: 120px; }
+  input::placeholder { color: var(--muted); }
+  .hint { margin: 6px 0 0; font: 12px var(--body); color: var(--muted); }
+
+  /* ── settings ───────────────────────────────────────────────────────── */
+  fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+  /* legends float so they sit inside the box, not on its border */
+  fieldset > legend { float: left; width: 100%; padding: 0; }
+  fieldset > legend + * { clear: both; }
+  .set { display: grid; gap: 6px; padding: 12px 0; }
+  .set ~ .set { border-top: 1px solid var(--line); }
+  .set > .k, .set > label.k, .set > legend.k { padding: 0; margin-bottom: 2px; }
+  .choices { display: flex; gap: 6px 18px; flex-wrap: wrap; }
+  .choices label, .check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .check { margin: 2px 0; }
+  .slide { display: grid; grid-template-columns: 1fr 64px; gap: 12px; align-items: center; }
+  .slide output { font: 13px var(--mono); color: var(--amber); text-align: right; }
+  .times { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .badge { font: 10px var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--amber); border: 1px solid rgba(242,180,92,.5);
+           border-radius: 3px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px; }
+  .saved { font: 11px var(--mono); color: var(--muted); transition: color .3s; }
+  .saved.ok { color: var(--ok); }
+  .results { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+  .results button { width: 100%; text-align: left; font-weight: 400; }
+  .here { font: 13px var(--mono); color: var(--amber); }
+  details.adv { margin-top: 18px; }
+  details.adv > summary { cursor: pointer; font: 10px var(--display); letter-spacing: .28em; text-transform: uppercase; color: var(--muted); padding: 6px 0; }
+  details.adv > summary:hover { color: var(--ink); }
+  .notice { margin: 0 0 16px; padding: 10px 14px; border: 1px solid rgba(242,180,92,.45); border-radius: 4px; background: var(--amber-dim); }
+  .notice[hidden] { display: none; }
+
+  /* ── log ────────────────────────────────────────────────────────────── */
+  .log { height: min(62vh, 640px); overflow: auto; margin: 0; padding: 12px 14px; background: #070a10; border: 1px solid var(--line); border-radius: 4px;
+         font: 12px/1.55 var(--mono); color: #cfd6e2; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .log .mark { color: var(--amber); }
+  .log .me { color: var(--muted); }
+  .log .err { color: var(--astro); }
+  .cmd { display: flex; gap: 10px; margin-top: 12px; }
+  .cmd input { font-family: var(--mono); }
+
+  /* ── toast (popover="manual": stays up until the timer hides it) ──────── */
+  .toast { position: fixed; inset: auto auto 22px 50%; translate: -50% 0; margin: 0; background: var(--panel-2); border: 1px solid var(--line-strong); color: var(--ink);
+           font: 13px var(--mono); padding: 8px 14px; border-radius: 4px; opacity: 0; transition: opacity .2s, display .2s allow-discrete, overlay .2s allow-discrete; }
+  .toast:popover-open, .toast.show { opacity: 1; }
+  @starting-style { .toast:popover-open { opacity: 0; } }
+  .toast:not([popover]) { pointer-events: none; }
+  .toast.err { border-color: var(--astro); color: var(--astro); }
+
+  @media (prefers-reduced-motion: reduce) { .viewport, .horizon, .meridian, button, .toast { transition: none; } .pill.busy::before { animation: none; } }
+</style>
+</head>
+<body>
+<div class="console">
+  <header class="top">
+    <div>
+      <div class="eyebrow">Hail Mary · desk unit · <span id="clock">--:--:--</span> local</div>
+      <h1>{name}</h1>
+    </div>
+    <ul class="vitals" aria-label="status">
+      <li><span class="k">Robot</span><span class="v" id="link">—</span></li>
+      <li><span class="k">State</span><span class="v" id="state">—</span></li>
+      <li><span class="k">Camera</span><span class="v" id="fps">—</span></li>
+      <li><span class="k">Hull</span><span class="v" id="temp">—</span></li>
+      <li><span class="k">Ears</span><span class="v" id="mic">—</span></li>
+    </ul>
+    <div class="server" id="serverbox" hidden>
+      <span class="pill" id="serverpill" role="status">server —</span>
+      <button type="button" class="primary" id="startbtn">Start server</button>
+      <button type="button" id="restartbtn">Restart</button>
+      <button type="button" class="astro" id="stopbtn">Stop</button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="dashboard">
+    <button type="button" role="tab" id="t-live" aria-controls="p-live" aria-selected="true">Live</button>
+    <button type="button" role="tab" id="t-settings" aria-controls="p-settings" aria-selected="false" tabindex="-1">Settings</button>
+    <button type="button" role="tab" id="t-log" aria-controls="p-log" aria-selected="false" tabindex="-1">Log</button>
+  </nav>
+
+  <!-- ══ LIVE ══════════════════════════════════════════════════════════ -->
+  <section role="tabpanel" id="p-live" aria-labelledby="t-live">
+    <div class="card stopped" id="stoppednote" hidden>
+      <h2>The server is stopped</h2>
+      <p>{name} shows the clock on his screen, but he can't hear, see or talk until the server runs. Settings still work.</p>
+      <button type="button" class="primary" id="startbtn2">Start server</button>
+    </div>
+    <div class="deck" id="livedeck">
+      <section aria-labelledby="l-sees">
+        <h2 class="label" id="l-sees"><span>{name} sees</span><span class="sub"><span id="framenote"></span>
+          <button type="button" id="rotbtn" title="turn the camera picture 90 degrees clockwise" style="margin-left:10px;padding:4px 10px">Rotate ↻ <span id="rotv">—</span></button></span></h2>
+        <div class="viewport dark" id="viewport">
+          <img id="cam" alt="what the robot's camera sees">
+          <div class="reticle"><div class="horizon" id="horizon"></div><div class="meridian" id="meridian"></div></div>
+          <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+          <div class="readout"><span id="rpan">pan —</span><span id="rtilt">tilt —</span><span id="rtrack" class="off">not tracking</span></div>
+          <div class="nocam">No picture yet.<br>The robot's camera streams once it connects.</div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2 class="label"><span>{name} hears</span><span class="sonar-state" id="hearstate">—</span></h2>
+          <div class="sonar"><canvas id="wave" aria-hidden="true"></canvas></div>
+          <p class="hint">Last 8 seconds of sound. Gold bars are speech, red is his own voice.</p>
+          <p class="line"><span class="who">You</span><span class="text" id="heard"></span></p>
+          <p class="line said"><span class="who">{name}</span><span class="text" id="said"></span></p>
+        </div>
+      </section>
+
+      <aside class="stack">
+        <div class="card">
+          <h2 class="label"><span>Rest</span><span class="sub" id="awakenote"></span></h2>
+          <div class="row">
+            <button type="button" id="wakebtn">Wake up</button>
+            <button type="button" class="astro" id="sleepbtn">Go to sleep</button>
+          </div>
+          <p class="hint">Asleep, his screen shows the clock and weather.</p>
+        </div>
+        <div class="card">
+          <h2 class="label"><span>Talk</span></h2>
+          <form class="row" id="sayform">
+            <label for="saytext" class="visually-hidden">Words for {name}</label>
+            <input type="text" id="saytext" name="text" placeholder="Words for {name}…" maxlength="300" autocomplete="off">
+            <button type="submit">Say it</button>
+            <button type="button" id="askbtn">Ask him</button>
+          </form>
+          <p class="hint">Say it speaks the words as written. Ask him sends them to his brain.</p>
+        </div>
+        <div class="card">
+          <h2 class="label"><span>Head</span><span class="sub" id="headnote"></span></h2>
+          <div class="field"><label class="k" for="pan">Pan</label><input type="range" id="pan" min="-110" max="110" step="1" value="0"><span class="v" id="panv">0°</span></div>
+          <div class="field"><label class="k" for="tilt">Tilt</label><input type="range" id="tilt" min="-85" max="85" step="1" value="0"><span class="v" id="tiltv">0°</span></div>
+          <div class="row">
+            <button type="button" id="centerbtn">Center and relax</button>
+            <button type="button" id="trackbtn">Follow my face</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="label"><span>Face</span></h2>
+          <div class="faces" id="faces"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ══ SETTINGS ═════════════════════════════════════════════════════ -->
+  <section role="tabpanel" id="p-settings" aria-labelledby="t-settings" hidden>
+    <p class="notice" id="nolauncher" hidden>Settings are edited through the launcher: run <code>server/launcher.py</code> and open its dashboard (port 8766).</p>
+    <p class="notice" id="restartnote" hidden>Your name changes when the server restarts. <button type="button" id="restartbtn2">Restart now</button></p>
+    <form id="settingsform" class="grid2" novalidate>
+      <div class="stack">
+        <fieldset class="card">
+          <legend class="label"><span>Clock screen</span><span class="saved" data-saved="clock"></span></legend>
+          <p class="hint" style="margin:-6px 0 6px">What {name}'s screen shows while he sleeps.</p>
+          <fieldset class="set"><legend class="k">Time</legend>
+            <div class="choices"><label><input type="radio" name="clock.hour_format" value="12"> 12-hour (8:26 PM)</label>
+              <label><input type="radio" name="clock.hour_format" value="24"> 24-hour (20:26)</label></div></fieldset>
+          <fieldset class="set"><legend class="k">Date</legend>
+            <div class="choices"><label><input type="radio" name="clock.date_format" value="month_day"> Mon Oct 5</label>
+              <label><input type="radio" name="clock.date_format" value="day_month"> Mon 5 Oct</label></div>
+            <label class="check"><input type="checkbox" name="clock.show_weekday"> Show the day of the week</label></fieldset>
+          <div class="set"><label class="k" for="tz">Time zone</label>
+            <div class="row"><input type="text" id="tz" name="clock.timezone" placeholder="this computer's" autocomplete="off" spellcheck="false" aria-describedby="tzhint">
+              <button type="button" id="tzauto">Use this computer's</button></div>
+            <p class="hint" id="tzhint">A name like America/New_York or Europe/Berlin. Empty = this computer's (<span id="comptz">—</span>).</p></div>
+        </fieldset>
+
+        <fieldset class="card">
+          <legend class="label"><span>Screen</span><span class="saved" data-saved="screen"></span></legend>
+          <div class="set"><label class="k" for="bri">Brightness</label>
+            <div class="slide"><input type="range" id="bri" name="screen.brightness" min="5" max="100" step="5"><output for="bri" data-unit="%"></output></div></div>
+          <fieldset class="set"><legend class="k">At night</legend>
+            <div class="choices"><label><input type="radio" name="screen.night_mode" value="off"> Same as day</label>
+              <label><input type="radio" name="screen.night_mode" value="dim"> Dim</label>
+              <label><input type="radio" name="screen.night_mode" value="dark"> Screen off</label></div>
+            <div class="times"><label for="n0" class="hint" style="margin:0">From</label><input type="time" id="n0" name="screen.night_start">
+              <label for="n1" class="hint" style="margin:0">to</label><input type="time" id="n1" name="screen.night_end"></div>
+            <div class="slide"><input type="range" id="nbri" name="screen.night_brightness" min="1" max="100" step="1" aria-label="night brightness"><output for="nbri" data-unit="%"></output></div>
+            <p class="hint">Night applies to the clock screen; his face stays at full brightness when you wake him. The clock also shifts a pixel or two each minute so the screen doesn't burn in.</p></fieldset>
+        </fieldset>
+      </div>
+
+      <div class="stack">
+        <fieldset class="card">
+          <legend class="label"><span>Weather</span><span class="saved" data-saved="weather"></span></legend>
+          <p class="hint" style="margin:-6px 0 6px">From Open-Meteo: free, no account or key. The robot fetches it itself.</p>
+          <div class="set"><span class="k">Location</span>
+            <div class="here" id="here">not set: no weather on the clock</div>
+            <div class="row" role="search"><label for="placeq" class="visually-hidden">Search for a city or town</label>
+              <input type="search" id="placeq" placeholder="City or town…" autocomplete="off">
+              <button type="button" id="placego">Search</button>
+              <button type="button" id="placeclear" class="astro">Clear</button></div>
+            <ul class="results" id="results" aria-live="polite"></ul></div>
+          <div class="set"><label class="check"><input type="checkbox" name="weather.show"> Show the weather on the clock</label></div>
+          <fieldset class="set"><legend class="k">Units</legend>
+            <div class="choices"><label><input type="radio" name="weather.units" value="f"> °F</label>
+              <label><input type="radio" name="weather.units" value="c"> °C</label></div></fieldset>
+          <fieldset class="set"><legend class="k">Beside the temperature</legend>
+            <div class="choices"><label><input type="radio" name="weather.show_sun" value="false"> Today's high / low</label>
+              <label><input type="radio" name="weather.show_sun" value="true"> Sunrise / sunset</label></div></fieldset>
+          <div class="set"><label class="k" for="wxmin">Refresh every</label>
+            <select id="wxmin" name="weather.refresh_min"><option value="15">15 minutes</option><option value="30">30 minutes</option>
+              <option value="60">hour</option><option value="120">2 hours</option></select></div>
+        </fieldset>
+
+        <fieldset class="card">
+          <legend class="label"><span>{name}</span><span class="saved" data-saved="rocky"></span></legend>
+          <div class="set"><label class="k" for="hname">Your name <span class="badge">restart</span></label>
+            <input type="text" id="hname" name="rocky.human_name" maxlength="40" autocomplete="given-name" aria-describedby="hnamehint">
+            <p class="hint" id="hnamehint">What he calls you. Empty = HUMAN_NAME from server/.env, else "friend".</p></div>
+          <div class="set"><label class="k" for="awake">Stays awake after you talk</label>
+            <div class="slide"><input type="range" id="awake" name="rocky.awake_seconds" min="10" max="600" step="5"><output for="awake" data-unit=" s"></output></div></div>
+          <div class="set"><label class="k" for="vol">Speaker volume</label>
+            <div class="slide"><input type="range" id="vol" name="rocky.volume" min="0" max="1" step="0.05"><output for="vol" data-fixed="2"></output></div></div>
+          <fieldset class="set"><legend class="k">His voice plays on</legend>
+            <div class="choices"><label><input type="radio" name="rocky.speaker_out" value="robot"> The robot's speaker</label>
+              <label><input type="radio" name="rocky.speaker_out" value="computer"> This computer</label></div></fieldset>
+          <div class="set"><label class="k" for="rot">Camera picture turned</label>
+            <select id="rot" name="rocky.camera_rotate"><option value="0">0°</option><option value="90">90° clockwise</option>
+              <option value="180">180°</option><option value="270">270° clockwise (V2 head)</option></select></div>
+        </fieldset>
+      </div>
+    </form>
+
+    <details class="adv card" id="advanced">
+      <summary>Advanced: listening and voice tuning</summary>
+      <div class="grid2" style="margin-top:12px">
+        <div><h3 class="label">Listening</h3><div id="tunes"></div></div>
+        <div><h3 class="label">Voice</h3><div id="voicetunes"></div></div>
+      </div>
+      <p class="hint">Saved and applied straight away. <button type="button" id="advreset">Back to the defaults</button></p>
+    </details>
+  </section>
+
+  <!-- ══ LOG ══════════════════════════════════════════════════════════ -->
+  <section role="tabpanel" id="p-log" aria-labelledby="t-log" hidden>
+    <div class="card">
+      <h2 class="label"><span>Server output</span><span class="sub" id="lognote"></span></h2>
+      <pre class="log" id="log" tabindex="0" aria-label="server output"></pre>
+      <form class="cmd" id="cmdform">
+        <label for="cmd" class="visually-hidden">Command for the server</label>
+        <input type="text" id="cmd" placeholder="A console command: ask …, say …, track on, status, mic …" autocomplete="off" spellcheck="false">
+        <button type="submit">Send</button>
+      </form>
+      <p class="hint">Commands go to the server's own console, the same as typing in its terminal.</p>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const NAME = "{name}";
+  const EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "sleepy", "thinking"];
+  const TUNES = [
+    { sec: "listening", key: "VAD_THRESHOLD",    name: "Hears speech above",   help: "lower = more sensitive",       min: 0.1, max: 0.95, step: 0.05 },
+    { sec: "listening", key: "TURN_THRESHOLD",   name: "Sure you're finished", help: "raise if he cuts you off",     min: 0.1, max: 0.95, step: 0.05 },
+    { sec: "listening", key: "TURN_MAX_SILENCE", name: "Longest pause",        help: "seconds he waits when unsure", min: 0.5, max: 6,    step: 0.1, unit: " s" },
+  ];
+  const VOICE = [
+    { sec: "voice", key: "TTS_LEVEL",       name: "Voice level", help: "loudness he's held to",                  min: 0.08, max: 0.40, step: 0.01 },
+    { sec: "voice", key: "TTS_HIGHPASS_HZ", name: "Bass cut",    help: "0 = off · try 250-350 if the speaker rattles", min: 0, max: 600, step: 10, unit: " Hz" },
+    { sec: "voice", key: "TTS_PRESENCE_DB", name: "Presence",    help: "lift above 1.5 kHz for a muffled voice",  min: 0, max: 12, step: 0.5, unit: " dB" },
+  ];
+  let status = {}, server = { running: true, launcher: false }, cfg = null;
+  const dragging = new Set();
+  const history = [];
+
+  // ── helpers ────────────────────────────────────────────────────────────
+  async function post(path, body) {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Rocky-Console": "1" }, body: JSON.stringify(body || {}) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    return j;
+  }
+  const t = $("toast"), popovers = typeof t.showPopover === "function";
+  if (popovers) t.popover = "manual";
+  let toastTimer;
+  function toast(msg, err) {
+    t.textContent = msg; t.classList.toggle("err", !!err);
+    if (popovers) { try { t.hidePopover(); } catch {} t.showPopover(); } else t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => popovers ? t.hidePopover() : t.classList.remove("show"), err ? 3500 : 1800);
+  }
+  async function act(action, body, okMsg) {
+    try { await post("/api/" + action, body); if (okMsg) toast(okMsg); }
+    catch (e) { toast(e.message, true); }
+  }
+  const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+  // ── tabs ───────────────────────────────────────────────────────────────
+  const tabs = [...document.querySelectorAll("[role=tab]")];
+  function selectTab(tab, focus) {
+    for (const x of tabs) {
+      const on = x === tab;
+      x.setAttribute("aria-selected", on); x.tabIndex = on ? 0 : -1;
+      $(x.getAttribute("aria-controls")).hidden = !on;
+    }
+    if (focus) tab.focus();
+    store.set("rocky-tab", tab.id);
+    if (tab.id === "t-settings") loadSettings();
+    if (tab.id === "t-log") scrollLog(true);
+    updateStream();
+  }
+  tabs.forEach((tab, i) => {
+    tab.addEventListener("click", () => selectTab(tab));
+    tab.addEventListener("keydown", ev => {
+      const n = { ArrowRight: 1, ArrowLeft: -1 }[ev.key];
+      if (n) { ev.preventDefault(); selectTab(tabs[(i + n + tabs.length) % tabs.length], true); }
+      if (ev.key === "Home") { ev.preventDefault(); selectTab(tabs[0], true); }
+      if (ev.key === "End") { ev.preventDefault(); selectTab(tabs[tabs.length - 1], true); }
+    });
+  });
+  const liveTab = () => !$("p-live").hidden;
+
+  // ── server control (only when the launcher serves this page) ───────────
+  async function serverAction(what) {
+    for (const b of ["startbtn", "startbtn2", "stopbtn", "restartbtn", "restartbtn2"]) $(b).disabled = true;
+    $("serverpill").className = "pill busy"; $("serverpill").textContent = what === "stop" ? "stopping…" : "starting…";
+    try { const j = await post("/launcher/" + what); toast("Server " + j.result); }
+    catch (e) { toast(e.message, true); }
+    setTimeout(pollServer, 600);
+  }
+  $("startbtn").onclick = $("startbtn2").onclick = () => serverAction("start");
+  $("stopbtn").onclick = () => serverAction("stop");
+  $("restartbtn").onclick = $("restartbtn2").onclick = () => { $("restartnote").hidden = true; serverAction("restart"); };
+  async function pollServer() {
+    try {
+      const r = await fetch("/launcher/state");
+      if (!r.ok) throw new Error("no launcher");
+      const s = await r.json();
+      server = { launcher: true, running: s.running || s.external, external: s.external, uptime: s.uptime_s };
+    } catch { server = { launcher: false, running: true }; }   // served by the brain itself: it's running
+    $("serverbox").hidden = !server.launcher;
+    $("nolauncher").hidden = server.launcher;
+    $("settingsform").inert = !server.launcher; $("advanced").inert = !server.launcher;
+    const pill = $("serverpill");
+    pill.className = "pill" + (server.running ? " on" : "");
+    pill.textContent = server.running ? (server.external ? "server running (started elsewhere)" : "server running" + (server.uptime != null ? " · " + fmtTime(server.uptime) : "")) : "server stopped";
+    $("startbtn").hidden = server.running; $("stopbtn").hidden = !server.running || server.external; $("restartbtn").hidden = !server.running || server.external;
+    for (const b of ["startbtn", "startbtn2", "stopbtn", "restartbtn", "restartbtn2"]) $(b).disabled = false;
+    $("stoppednote").hidden = server.running; $("livedeck").hidden = !server.running;
+    if (!server.running) showOffline();
+    updateStream();
+  }
+  function fmtTime(s) { return s < 90 ? s + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h"; }
+  setInterval(pollServer, 2000); pollServer();
+
+  // the camera stream only while it can show something (it holds a connection open)
+  let streaming = false;
+  function updateStream() {
+    const want = server.running && liveTab();
+    if (want && !streaming) { $("cam").src = "/stream?" + Date.now(); streaming = true; }
+    if (!want && streaming) { $("cam").removeAttribute("src"); streaming = false; }
+  }
+  $("cam").addEventListener("error", () => { streaming = false; setTimeout(updateStream, 2000); });
+
+  // ── live controls ──────────────────────────────────────────────────────
+  for (const e of EMOTIONS) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = e; b.dataset.emotion = e;
+    b.onclick = () => act("emotion", { name: e });
+    $("faces").appendChild(b);
+  }
+  let headTimer;
+  function headChanged() {
+    $("panv").textContent = $("pan").value + "°"; $("tiltv").textContent = $("tilt").value + "°";
+    clearTimeout(headTimer);
+    headTimer = setTimeout(() => act("head", { pan: +$("pan").value, tilt: +$("tilt").value }), 120);
+  }
+  for (const id of ["pan", "tilt"]) {
+    $(id).addEventListener("input", headChanged);
+    $(id).addEventListener("pointerdown", () => dragging.add(id));
+    $(id).addEventListener("pointerup", () => setTimeout(() => dragging.delete(id), 600));
+  }
+  $("rotbtn").onclick = () => { const d = ((status.camera_rotate || 0) + 90) % 360; act("camera_rotate", { deg: d }, "Camera turned " + d + "°"); };
+  $("centerbtn").onclick = () => act("center", {}, "Head centered");
+  $("trackbtn").onclick = () => act("track", { on: !status.tracking_enabled });
+  $("sayform").onsubmit = ev => { ev.preventDefault(); const x = $("saytext").value.trim(); if (x) { act("say", { text: x }, "Saying it"); $("saytext").value = ""; } };
+  $("askbtn").onclick = () => { const x = $("saytext").value.trim(); if (x) { act("ask", { text: x }, "Asked " + NAME); $("saytext").value = ""; } };
+  $("wakebtn").onclick = () => act("sleep", { on: false }, NAME + " is awake");
+  $("sleepbtn").onclick = () => act("sleep", { on: true }, NAME + " is going to sleep");
+
+  // ── the hearing strip ──────────────────────────────────────────────────
+  const canvas = $("wave"), ctx = canvas.getContext("2d");
+  function drawWave() {
+    const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w) return;
+    if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    const n = 40, gap = 3, bw = (w - 16) / n - gap;
+    ctx.fillStyle = "rgba(255,255,255,.06)"; ctx.fillRect(8, h / 2, w - 16, 1);
+    for (let i = 0; i < n; i++) {
+      const s = history[history.length - n + i], x = 8 + i * (bw + gap);
+      if (!s) { ctx.fillStyle = "rgba(255,255,255,.05)"; ctx.fillRect(x, h / 2 - 1, bw, 2); continue; }
+      const [level, prob, speaking] = s, amp = Math.min(1, Math.sqrt(level) * 3.2), bar = Math.max(2, amp * (h - 14));
+      ctx.fillStyle = speaking ? "rgba(255,74,61,.85)" : prob > (status.tuning?.VAD_THRESHOLD ?? 0.5) ? "#f2b45c" : "rgba(138,148,166,.55)";
+      ctx.fillRect(x, h / 2 - bar / 2, bw, bar);
+    }
+  }
+  window.addEventListener("resize", drawWave);
+
+  // ── status loop (fast while the Live tab shows, slow otherwise) ─────────
+  function showOffline() {
+    $("link").textContent = "—"; $("state").textContent = server.running ? "—" : "server off"; $("fps").textContent = "—"; $("temp").textContent = "—"; $("mic").textContent = "—";
+    $("link").className = $("fps").className = $("temp").className = "v";
+  }
+  async function tick() {
+    if (server.running) {
+      try {
+        const r = await fetch("/status");
+        if (r.ok) render(await r.json()); else showOffline();
+      } catch { showOffline(); }
+    }
+    setTimeout(tick, server.running && liveTab() && !document.hidden ? 200 : 1500);
+  }
+  function render(s) {
+    status = s;
+    const linked = !!s.robot, fresh = s.frame_age_s != null && s.frame_age_s < 3;
+    $("link").textContent = linked ? "on WiFi" : "not connected"; $("link").className = "v" + (linked ? " good" : " warn");
+    $("fps").textContent = fresh ? s.fps + " fps" : "no signal"; $("fps").className = "v" + (fresh ? "" : " warn");
+    $("temp").textContent = s.temperature_c != null ? s.temperature_c.toFixed(1) + " °C" : "—";
+    $("temp").className = "v" + (s.temperature_c > 70 ? " warn" : "");
+    $("state").textContent = s.speaking ? "speaking" : s.thinking ? "thinking" : s.awake ? "awake" : "asleep";
+    $("mic").textContent = s.listening ? (s.mic === "robot" ? "robot mic" : "computer mic") : "off";
+    $("awakenote").textContent = s.awake ? "dozes off in " + Math.max(0, Math.round(s.awake_for)) + " s" : "asleep · say hey " + NAME;
+    $("viewport").classList.toggle("dark", !fresh); $("viewport").classList.toggle("speaking", !!s.speaking);
+    $("framenote").textContent = fresh ? "" : "no fresh frame";
+    const pan = s.pan ?? 0, tilt = s.tilt ?? 0;
+    $("horizon").style.top = (50 + tilt * (25 / 60)) + "%"; $("meridian").style.left = (50 - pan * (38 / 180)) + "%";
+    $("rpan").textContent = "pan " + Math.round(pan) + "°"; $("rtilt").textContent = "tilt " + Math.round(tilt) + "°";
+    $("rtrack").textContent = s.tracking ? "face locked" : s.tracking_enabled ? "looking for a face" : s.head_held ? "holding" : "not tracking";
+    $("rtrack").className = s.tracking ? "" : "off";
+    $("headnote").textContent = s.head_held ? "holding a pose" : "";
+    if (!dragging.has("pan")) { $("pan").value = Math.round(pan); $("panv").textContent = Math.round(pan) + "°"; }
+    if (!dragging.has("tilt")) { $("tilt").value = Math.round(tilt); $("tiltv").textContent = Math.round(tilt) + "°"; }
+    if (s.camera_rotate != null) $("rotv").textContent = s.camera_rotate + "°";
+    if (s.limits) { $("pan").min = -s.limits.pan; $("pan").max = s.limits.pan; $("tilt").min = s.limits.tilt[0]; $("tilt").max = s.limits.tilt[1]; }
+    for (const b of $("faces").children) b.classList.toggle("active", b.dataset.emotion === s.emotion);
+    $("trackbtn").classList.toggle("active", !!s.tracking_enabled); $("trackbtn").textContent = s.tracking_enabled ? "Stop following" : "Follow my face";
+    $("heard").textContent = s.last_heard || ""; $("said").textContent = s.last_said || "";
+    history.push([s.level || 0, s.speech_prob || 0, !!s.speaking]); if (history.length > 60) history.shift();
+    const hs = $("hearstate");
+    hs.textContent = s.speaking ? "speaking" : !s.listening ? "ears off" : s.hearing ? "hearing you" : "listening";
+    hs.className = "sonar-state" + (s.speaking ? " astro" : s.hearing ? " hot" : "");
+    if (liveTab()) drawWave();
+  }
+  tick();
+
+  // ── settings ───────────────────────────────────────────────────────────
+  const form = $("settingsform");
+  function sliderRow(into, d) {
+    const id = "tune-" + d.key, wrap = document.createElement("div"); wrap.className = "set";
+    wrap.innerHTML = `<label class="k" for="${id}">${d.name}</label>
+      <div class="slide"><input type="range" id="${id}" name="${d.sec}.${d.key}" min="${d.min}" max="${d.max}" step="${d.step}"><output for="${id}"></output></div>
+      <p class="hint" style="margin:0">${d.help}</p>`;
+    const out = wrap.querySelector("output"); out.dataset.unit = d.unit || ""; out.dataset.fixed = d.step >= 1 ? "0" : d.step < 0.1 ? "2" : "1";
+    into.appendChild(wrap);
+  }
+  TUNES.forEach(d => sliderRow($("tunes"), d)); VOICE.forEach(d => sliderRow($("voicetunes"), d));
+  const outputFor = inp => inp.parentElement.querySelector("output");
+  function showOutput(inp) {
+    const o = outputFor(inp); if (!o) return;
+    const f = o.dataset.fixed; o.textContent = (f != null ? (+inp.value).toFixed(+f) : inp.value) + (o.dataset.unit || "");
+  }
+  function controls() { return [...document.querySelectorAll("#settingsform [name], #advanced [name]")]; }
+
+  function fill(s) {
+    cfg.settings = s;
+    for (const el of controls()) {
+      const [sec, key] = el.name.split(".");
+      let v = s[sec]?.[key];
+      if (v == null && cfg.config_defaults && key in cfg.config_defaults) v = cfg.config_defaults[key];
+      if (el.type === "radio") el.checked = String(v) === el.value;
+      else if (el.type === "checkbox") el.checked = !!v;
+      else if (document.activeElement !== el) el.value = v ?? "";
+      if (el.type === "range") showOutput(el);
+    }
+    const w = s.weather;
+    $("here").textContent = w.lat != null ? (w.location || `${w.lat.toFixed(2)}, ${w.lon.toFixed(2)}`) : "not set: no weather on the clock";
+    $("placeclear").hidden = w.lat == null;
+  }
+  async function loadSettings() {
+    try {
+      const r = await fetch("/launcher/settings");
+      if (!r.ok) throw new Error();
+      cfg = await r.json();
+      $("comptz").textContent = cfg.computer_timezone;
+      fill(cfg.settings);
+    } catch { /* not served by the launcher: the notice says so */ }
+  }
+  function valueOf(el) {
+    const [sec, key] = el.name.split(".");
+    const kind = cfg?.schema?.[sec]?.[key]?.kind;
+    if (el.type === "checkbox") return el.checked;
+    if (el.type === "radio") { if (el.value === "true") return true; if (el.value === "false") return false; }
+    if (kind === "int" || kind === "float" || (kind === "choice" && /^\d+$/.test(el.value))) return +el.value;
+    return el.value;
+  }
+  const savedTimers = {};
+  async function save(changes, section) {
+    const tag = document.querySelector(`[data-saved="${section}"]`);
+    try {
+      const j = await post("/launcher/settings", { changes });
+      fill(j.settings);
+      if (tag) { tag.textContent = j.applied_live || !server.running ? "saved" : "saved · applies when the server runs"; tag.classList.add("ok");
+        clearTimeout(savedTimers[section]); savedTimers[section] = setTimeout(() => { tag.textContent = ""; tag.classList.remove("ok"); }, 2500); }
+      if (changes.rocky && "human_name" in changes.rocky && server.running) $("restartnote").hidden = false;
+    } catch (e) { toast(e.message, true); loadSettings(); }
+  }
+  const debounce = {};
+  function changed(el, delay) {
+    if (!el.name) return;
+    const [sec, key] = el.name.split(".");
+    if (el.type === "range") showOutput(el);
+    clearTimeout(debounce[el.name]);
+    debounce[el.name] = setTimeout(() => save({ [sec]: { [key]: valueOf(el) } }, sec), delay);
+  }
+  form.addEventListener("input", ev => { if (ev.target.type === "range") changed(ev.target, 350); });
+  form.addEventListener("change", ev => { if (ev.target.type !== "range") changed(ev.target, 0); });
+  form.addEventListener("submit", ev => ev.preventDefault());
+  $("advanced").addEventListener("input", ev => changed(ev.target, 350));
+  $("advreset").onclick = () => save({ listening: { VAD_THRESHOLD: null, TURN_THRESHOLD: null, TURN_MAX_SILENCE: null },
+                                       voice: { TTS_LEVEL: null, TTS_HIGHPASS_HZ: null, TTS_PRESENCE_DB: null } }, "listening")
+                                 .then(() => toast("Back to the defaults · restart the server to apply them"));
+  $("tzauto").onclick = () => { $("tz").value = ""; save({ clock: { timezone: "" } }, "clock"); };
+
+  // weather location: search Open-Meteo's places (through the launcher), pick one
+  async function searchPlaces() {
+    const q = $("placeq").value.trim(), list = $("results");
+    list.innerHTML = "";
+    if (!q) return;
+    list.innerHTML = '<li class="hint">Searching…</li>';
+    try {
+      const r = await fetch("/launcher/geocode?q=" + encodeURIComponent(q)), j = await r.json();
+      if (!r.ok) throw new Error(j.error || "search failed");
+      list.innerHTML = "";
+      if (!j.results.length) { list.innerHTML = '<li class="hint">No places found. Try another spelling.</li>'; return; }
+      for (const p of j.results) {
+        const li = document.createElement("li"), b = document.createElement("button");
+        b.type = "button"; b.textContent = p.label + (p.timezone ? "  ·  " + p.timezone : "");
+        b.onclick = () => {
+          list.innerHTML = ""; $("placeq").value = "";
+          const changes = { weather: { location: p.label, lat: p.lat, lon: p.lon, show: true } };
+          if (p.country_code && p.country_code !== "US") changes.weather.units = "c";
+          save(changes, "weather").then(() => {
+            const tzNow = cfg.settings.clock.timezone || cfg.computer_timezone;
+            if (p.timezone && p.timezone !== tzNow) toast(`Clock time zone is ${tzNow}; set it to ${p.timezone} under Clock screen if you moved`);
+          });
+        };
+        li.appendChild(b); list.appendChild(li);
+      }
+    } catch (e) { list.innerHTML = ""; toast(e.message, true); }
+  }
+  $("placego").onclick = searchPlaces;
+  $("placeq").addEventListener("keydown", ev => { if (ev.key === "Enter" && !ev.isComposing) { ev.preventDefault(); searchPlaces(); } });
+  $("placeclear").onclick = () => save({ weather: { location: "", lat: null, lon: null } }, "weather");
+
+  // ── log ────────────────────────────────────────────────────────────────
+  let logSeq = 0, stick = true;
+  const logEl = $("log");
+  logEl.addEventListener("scroll", () => { stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 30; });
+  function scrollLog(force) { if (force || stick) logEl.scrollTop = logEl.scrollHeight; }
+  async function pollLog() {
+    if (server.launcher) {
+      try {
+        const j = await (await fetch("/launcher/log?after=" + logSeq)).json();
+        if (j.seq < logSeq) { logEl.textContent = ""; }        // the launcher restarted
+        logSeq = j.seq;
+        const frag = document.createDocumentFragment();
+        for (const line of j.lines) {
+          const span = document.createElement("span");
+          span.className = line.startsWith("──") ? "mark" : line.startsWith("> ") ? "me" : /error|traceback|failed/i.test(line) ? "err" : "";
+          span.textContent = line + "\n"; frag.appendChild(span);
+        }
+        logEl.appendChild(frag);
+        while (logEl.childNodes.length > 3000) logEl.firstChild.remove();
+        if (j.lines.length) scrollLog();
+        $("lognote").textContent = server.running ? "live" : "server stopped · last run";
+      } catch {}
+    } else {
+      $("lognote").textContent = "needs the launcher";
+    }
+    setTimeout(pollLog, document.hidden ? 4000 : 1000);
+  }
+  pollLog();
+  $("cmdform").onsubmit = async ev => {
+    ev.preventDefault();
+    const line = $("cmd").value.trim(); if (!line) return;
+    try { await post("/launcher/console", { line }); $("cmd").value = ""; } catch (e) { toast(e.message, true); }
+  };
+
+  // ── start ──────────────────────────────────────────────────────────────
+  const clock = () => { $("clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); };
+  clock(); setInterval(clock, 1000);
+  const first = $(location.hash === "#settings" ? "t-settings" : location.hash === "#log" ? "t-log" : store.get("rocky-tab") || "t-live");
+  selectTab(first || tabs[0]);
+})();
+</script>
+</body>
+</html>

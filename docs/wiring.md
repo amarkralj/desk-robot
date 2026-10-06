@@ -51,7 +51,7 @@ printed on the board:
 | Pan servo orange (signal) | XIAO **D3** |
 | Tilt servo brown (GND) | ground rail |
 | Tilt servo red (5V) | 5V rail |
-| Tilt servo orange (signal) | XIAO **D6** |
+| Tilt servo orange (signal) | XIAO **D8** (not D6: D6 is the ESP32's serial TX and the boot text on it jerks the servo at power-up) |
 | Capacitor − (striped) | ground rail |
 | Capacitor + | 5V rail |
 

@@ -106,7 +106,7 @@ version:
 1. Everything shares a ground rail.
 2. Servos and the amplifier run from the XIAO's **5 V** pin, never 3.3 V.
 3. The big capacitor goes across 5 V and ground, striped leg to ground.
-4. The OLED is on I2C (D4/D5), the servos on D3 (pan) and D6 (tilt), the
+4. The OLED is on I2C (D4/D5), the servos on D3 (pan) and D8 (tilt), the
    amplifier on D0, D1, D2.
 5. The camera and microphone are on the Sense board already. No wiring.
 
@@ -177,11 +177,16 @@ Open `server/.env` and fill in:
   one with `python3 -c "import secrets; print(secrets.token_hex(16))"`.
 - `FISH_AUDIO_API_KEY`: optional, for the cloned voice.
 
-Then start it, from the `server` folder with the venv active:
+Then start the dashboard, from the `server` folder:
 
 ```bash
-python -m brain.main
+.venv/bin/python launcher.py      # Windows: .venv\Scripts\python launcher.py
 ```
+
+and open <http://localhost:8766/>. Press **Start server** to start the brain.
+(You can also run the brain on its own with `python -m brain.main` with the
+venv active; the launcher just does that for you and keeps the dashboard up
+while the brain is stopped.)
 
 The first run downloads about 160 MB of speech models into `~/.cache`
 (Whisper from Hugging Face, the two turn-detection models from GitHub and
@@ -189,11 +194,34 @@ Hugging Face, all pinned to a fixed version). macOS will ask once to let
 your terminal use the microphone; on Windows, check that microphone access
 for desktop apps is on in Privacy settings. Say **"hey Rocky, what is a
 weekend?"** and he should answer through your computer's speaker. You can
-also type `ask what is a weekend?` into the server console.
+also type `ask what is a weekend?` into the server console (the dashboard's
+Log tab has one).
 
-The live view at <http://localhost:8766/> is Rocky's console: what he sees,
-what he hears, the last exchange, and controls for his head, face, voice,
-sleep, and listening. It only answers this computer.
+To have the dashboard there whenever you log in, run
+`server/install_launcher.sh` once (macOS; `--uninstall` removes it, and
+`--start-brain` also starts the brain with it).
+
+### The dashboard
+
+<http://localhost:8766/> has three tabs, and only answers this computer:
+
+- **Live**: what Rocky sees and hears, the last exchange, and buttons for
+  his head, face, sleep, and words to say. Start, Restart, and Stop for the
+  server are in the header.
+- **Settings**: everything you would otherwise edit in a file, saved in
+  `server/settings.json` (git-ignored) and applied straight away. The clock
+  screen (12 or 24 hour, date order, time zone), the weather (search for
+  your town; °F or °C; high and low or sunrise and sunset), the screen
+  (brightness, dim or off at night), your name, how long he stays awake,
+  speaker volume, where his voice plays, the camera rotation, and an
+  Advanced section with the listening and voice tuning. Settings work with
+  the server stopped; the robot gets them the next time it connects.
+- **Log**: the server's output, and a box for console commands. It is kept
+  in memory only, and speech Rocky heard but ignored shows without its
+  words.
+
+The brain also serves the Live part on <http://localhost:8767/> by itself,
+without settings or server buttons.
 
 ## Connect the robot to the brain
 
@@ -230,7 +258,7 @@ away from the computer.
 | "Rocky, look left" / "look at the door" | He turns his head, takes a fresh picture, and tells you what he sees. |
 | "what do you see?" | He describes the current camera frame, and only what is actually in it. |
 | "track me" / "stop tracking" | His head follows your face, or stops. |
-| "Rocky, sleep" / "goodnight" | He says goodnight and stops listening until you say his name. |
+| "Rocky, sleep" / "goodnight" | He says goodnight and stops listening until you say his name. His screen shows the sleep face for a few seconds, then the clock. |
 
 He decides you are finished the way a person does. A small model listens to
 how your sentence ends; if you sound done he answers about a third of a
@@ -256,6 +284,21 @@ status               what is connected
 
 Every reply prints a `timing` line so you can see where the seconds go.
 
+### The clock screen
+
+While Rocky is asleep (and from the moment he powers up) his screen shows
+the time, the date, and the weather. "Hey Rocky" switches to his face; when
+he dozes off, or you send him to sleep, he shows the sleep face for about
+five seconds and goes back to the clock.
+
+The robot runs the clock itself: internet time over WiFi, and weather from
+[Open-Meteo](https://open-meteo.com) (free, no account or key), so it keeps
+going with the computer off. Set your town in the dashboard's Settings tab;
+until you do, the clock shows no weather. The robot keeps its settings in
+flash, so a power cut doesn't lose them. Against OLED burn-in the clock
+shifts a pixel or two every minute, and by default it dims from 23:00 to
+07:00 (or turns the screen off, if you choose that).
+
 ## Make it your own
 
 Everything below is a one-file edit. None of it needs the robot plugged in,
@@ -267,7 +310,9 @@ body is even built.
 `ROBOT_NAME` in `server/brain/config.py`. The wake word becomes "hey
 <name>" and the sleep phrases and speech-to-text hint follow automatically.
 Update `WAKE_PHRASES` in the same file with the ways speech-to-text tends
-to mishear the new name (say it a few times and watch the console). The
+to mishear the new name (run `python -m brain.main` in a terminal, say it
+a few times, and watch the `heard, ignoring` lines; the dashboard's Log tab
+hides their words). The
 character file still introduces itself as Rocky, so edit
 `server/brain/personality.py` too, or you have a robot called Bolt who
 insists he is Rocky.
@@ -301,9 +346,9 @@ default voice; Linux uses `espeak-ng` if installed.
 The robot's speaker is tiny, so a deep voice turns into rattle. Three knobs
 in `config.py` shape the audio before it reaches the speaker: `TTS_LEVEL`
 (loudness he is held to), `TTS_HIGHPASS_HZ` (bass cut, try 250 to 350 for a
-deep voice), and `TTS_PRESENCE_DB` (lift for a muffled voice). The console
-page has sliders for all three so you can dial them in while he talks, then
-copy the winners into config. If a voice keeps misbehaving, `DEBUG_SAVE_TTS`
+deep voice), and `TTS_PRESENCE_DB` (lift for a muffled voice). The
+dashboard's Settings tab has sliders for all three under Advanced, so you
+can dial them in while he talks; they are saved in `server/settings.json`. If a voice keeps misbehaving, `DEBUG_SAVE_TTS`
 in `config.py` keeps the last 30 spoken clips and their text in
 `server/debug/tts/` (git-ignored) so you can listen back.
 
@@ -335,8 +380,9 @@ Also in `config.py`: `VAD_THRESHOLD` (how loud counts as speech),
 are done, and how long he will wait), `AWAKE_SECONDS` (how long he stays
 awake after you speak), `STT_MODEL` (`base.en` is fast; `small.en` hears
 better and takes about a second longer), and `MIC_DEVICE` in `.env` if the
-computer should use a specific microphone. The console page has sliders for the
-listening knobs; changes apply immediately and last until restart.
+computer should use a specific microphone. The dashboard has sliders for the
+listening knobs and how long he stays awake; changes apply immediately and
+are saved in `server/settings.json`, which overrides `config.py`.
 
 ### Change the body
 
@@ -368,10 +414,11 @@ different panel. The expressions themselves are drawn in `face.cpp`.
   voice.
 - **"cannot speak: no built-in voice on this system."** Linux without
   `espeak-ng`. Install it, or set a Fish key.
-- **The voice rattles or sounds muffled.** Use the speaker-tuning sliders on
-  the console page, then copy the values into `config.py`.
-- **He cuts you off, or waits too long.** Raise `TURN_THRESHOLD` if he jumps
-  in early, lower it if he waits. `TURN_MAX_SILENCE` is his patience limit.
+- **The voice rattles or sounds muffled.** Use the voice sliders under
+  Settings → Advanced in the dashboard.
+- **He cuts you off, or waits too long.** Raise "Sure you're finished"
+  (`TURN_THRESHOLD`) in the dashboard if he jumps in early, lower it if he
+  waits. `TURN_MAX_SILENCE` is his patience limit.
 - **First start is slow.** It is downloading the speech models. Only once.
 
 ## How it works
@@ -379,7 +426,8 @@ different panel. The expressions themselves are drawn in `face.cpp`.
 - **Firmware** (`firmware/src/`): `face.cpp` draws the eyes and mouth at 30
   fps, `servo_neck.cpp` eases the head with speed limits, `camera.cpp`
   keeps the latest JPEG in memory, `mic.cpp` streams 16 kHz audio, and
-  `speaker.cpp` plays whatever the brain sends. `link.cpp` is the WebSocket
+  `speaker.cpp` plays whatever the brain sends. `home_screen.cpp` is the
+  clock and weather screen. `link.cpp` is the WebSocket
   client. The USB serial console and the brain drive the same commands.
 - **Brain** (`server/brain/`): `ears.py` turns audio into text with
   faster-whisper, using Silero VAD to find speech and Smart Turn
@@ -388,14 +436,19 @@ different panel. The expressions themselves are drawn in `face.cpp`.
   tools: `look` (move the head, take a picture) and `track_face`.
   `mouth.py` turns text into audio with Fish Audio and levels it for the
   small speaker. `tracker.py` follows faces with OpenCV. `eyes.py` serves
-  the console page. `main.py` ties it together.
+  the camera and the Live page. `settings.py` reads and writes
+  `settings.json`. `main.py` ties it together.
+- **Launcher** (`server/launcher.py`): the dashboard on port 8766. It starts
+  and stops the brain as a child process, keeps its log, edits the settings,
+  and passes the live parts through to the brain on 8767. Standard library
+  only.
 - **Protocol** between the two is in [`docs/protocol.md`](docs/protocol.md):
   JSON commands one way, audio and JPEG frames the other.
 
 Tests run with no hardware and no downloads:
 
 ```bash
-cd server && python -m unittest tests/test_personality.py tests/test_segmenter.py
+cd server && python -m unittest tests/test_personality.py tests/test_segmenter.py tests/test_settings.py
 ```
 
 ## Privacy and security
@@ -407,7 +460,7 @@ cd server && python -m unittest tests/test_personality.py tests/test_segmenter.p
 - **Only your robot can talk to the brain.** The WebSocket port is open on
   your LAN, but the first message must carry `ROBOT_TOKEN`. One robot at a
   time.
-- **The camera console is this computer only** and rejects requests from other
+- **The dashboard is this computer only** and rejects requests from other
   hosts. Opening it to the LAN would let anyone on your WiFi watch the
   camera and read transcripts.
 - **Voice is unauthenticated by design.** Anyone in earshot can say "hey
@@ -417,9 +470,14 @@ cd server && python -m unittest tests/test_personality.py tests/test_segmenter.p
   (only for visual questions) to your model provider, and each reply's text
   to Fish Audio if configured. Speech-to-text and face tracking run
   locally. The first run downloads speech models from Hugging Face and
-  GitHub, pinned to fixed versions. The console page loads nothing from the
-  internet.
-- **What is stored:** the in-memory conversation, and nothing else unless
+  GitHub, pinned to fixed versions. The dashboard page loads nothing from
+  the internet. The robot asks an internet time server for the time, and
+  Open-Meteo for the weather at the location you set (rounded to about
+  10 m); the dashboard's town search sends what you type to Open-Meteo.
+- **What is stored:** the in-memory conversation and your dashboard
+  settings (`server/settings.json`, and the clock part in the robot's
+  flash). The dashboard's log lives in memory and is gone when the launcher
+  stops. Nothing else is kept unless
   you turn on `DEBUG_SAVE_TTS` or `DEBUG_SAVE_UTTERANCE` in `config.py`,
   which keep recent spoken replies or the last thing heard in
   `server/debug/` (git-ignored).

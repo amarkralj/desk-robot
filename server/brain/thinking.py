@@ -46,23 +46,23 @@ TOOLS = [
                 "the current picture. Always call it when asked, even if you think "
                 "you are already there: the result tells you where your head really "
                 "is and whether it is at a limit. You get a fresh camera image "
-                "afterwards; describe only what that image shows. Up is as high as "
-                "'level': your neck cannot tilt above eye level."
+                "afterwards; describe only what that image shows. Your neck turns up "
+                "to 180 degrees left or right and tilts up to 30 degrees up or down."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "direction": {
                         "type": "string",
-                        "enum": ["left", "right", "down", "level", "center"],
+                        "enum": ["left", "right", "up", "down", "level", "center"],
                         "description": (
-                            "left/right turn the head only (no nod); down/level nod only (no turn); "
+                            "left/right turn the head only (no nod); up/down/level nod only (no turn); "
                             "center = straight ahead and level"
                         ),
                     },
                     "degrees": {
                         "type": "number",
-                        "description": "How far: 5-60 for left/right, 5-60 for down. Omit for a normal look.",
+                        "description": "How far: 5-180 for left/right, 5-30 for up/down. Omit for a normal look.",
                     },
                 },
                 "required": ["direction"],

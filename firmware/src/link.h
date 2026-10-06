@@ -16,6 +16,7 @@ class Link {
   using CommandHandler = std::function<void(const String&)>;
   using StateHandler = std::function<void(bool connected)>;
   using AudioHandler = std::function<void(const uint8_t* pcm, size_t len)>;
+  using SettingsHandler = std::function<void(const char* json)>;
 
   void begin(const char* ssid, const char* pass, const char* host,
              uint16_t port, const char* token, CommandHandler onCommand,
@@ -23,6 +24,8 @@ class Link {
 
   // Binary frames from the brain: type byte 0x01 = TTS audio (16 kHz s16le).
   void onAudio(AudioHandler h) { onAudio_ = std::move(h); }
+  // The brain's `settings` message (clock / weather / screen), passed on as the raw JSON.
+  void onSettings(SettingsHandler h) { onSettings_ = std::move(h); }
 
   // Call every loop().
   void update(uint32_t nowMs);
@@ -43,6 +46,7 @@ class Link {
   CommandHandler onCommand_;
   StateHandler onState_;
   AudioHandler onAudio_;
+  SettingsHandler onSettings_;
   const char* ssid_ = nullptr;
   const char* pass_ = nullptr;
   const char* token_ = "";

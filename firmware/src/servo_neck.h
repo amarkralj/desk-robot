@@ -3,17 +3,26 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
 
-// One head axis (pan or tilt): smooth easing, speed limiting, auto-relax.
+// One head axis (pan or tilt): smooth motion, auto-relax.
+//
+// Motion is speed- AND acceleration-limited: the head speeds up gently,
+// cruises at up to maxSpeed, and slows down gently to stop on the target. A new
+// target mid-move just bends the motion (no restart from standstill), so face
+// tracking, which retargets ~10x a second, stays fluid. Call update() at a
+// steady rate; 50 Hz matches the servo's own pulse rate.
 //
 // Angles are in "head degrees": 0 = centered. For pan, negative = robot's
 // left; for tilt, negative = down. The class maps that onto the servo's
-// 0-180 range, with an optional trim offset and direction flip.
+// 0-180 range, with an optional trim offset, direction flip and gear ratio.
 
 class ServoNeck {
  public:
-  void begin(uint8_t pin, float minDeg, float maxDeg, float maxSpeedDegPerSec,
+  // gearRatio = head degrees per servo degree (2 for the geared pan, 1 for a
+  // servo that drives the head directly).
+  void begin(uint8_t pin, float minDeg, float maxDeg, float maxSpeedDegPerSec, float accelDegPerSec2,
              uint32_t relaxAfterMs, float trimDeg = 0.0f,
-             float glanceRangeDeg = 25.0f, bool invert = false);
+             float glanceRangeDeg = 25.0f, bool invert = false,
+             float gearRatio = 1.0f);
 
   void setTarget(float deg);
   // Calibration only: drive straight to a head angle, ignoring the limits.
@@ -23,13 +32,21 @@ class ServoNeck {
   // under the head's weight when the other axis swings; call this while the
   // other axis is moving.
   void hold();
-  bool moving() const { return fabsf(targetDeg_ - currentDeg_) > 0.25f; }
+  bool moving() const { return fabsf(targetDeg_ - currentDeg_) > 0.25f || fabsf(velocity_) > 1.0f; }
   float current() const { return currentDeg_; }
+  // Live tuning (console `motion pan|tilt <maxSpeed> <accel>`); head deg/s and deg/s^2.
+  void setMotion(float maxSpeed, float accel) { maxSpeed_ = maxSpeed; accel_ = accel; }
+  float maxSpeed() const { return maxSpeed_; }
+  float accel() const { return accel_; }
   float target() const { return targetDeg_; }
 
   // When idle glances are on, the head occasionally turns a little on its
   // own — paired with the face saccades it makes the robot feel alive.
   void setIdleGlances(bool on) { idleGlances_ = on; }
+  // Only go quiet (relax) at rest within this many degrees of center; further
+  // out the servo keeps holding. For tilt: the head's weight sits above the
+  // axis, so an unpowered tilt servo lets a tipped head sag. < 0 = always relax.
+  void setRelaxWithin(float deg) { relaxWithin_ = deg; }
 
   // Call every frame.
   void update(uint32_t nowMs);
@@ -41,15 +58,20 @@ class ServoNeck {
   Servo servo_;
   uint8_t pin_ = 0;
   float minDeg_ = -60, maxDeg_ = 60;
-  float maxSpeed_ = 180; // deg/sec
+  float maxSpeed_ = 180; // head deg/sec
+  float accel_ = 600;    // head deg/sec^2
+  float velocity_ = 0;   // head deg/sec, signed
   uint32_t relaxAfterMs_ = 1500;
+  float relaxWithin_ = -1;  // < 0: relax anywhere
   float trimDeg_ = 0;
   float glanceRange_ = 25;
   bool invert_ = false;
+  float gearRatio_ = 1.0f;
 
   float currentDeg_ = 0;
   float targetDeg_ = 0;
-  bool attached_ = false;
+  bool attached_ = false;   // pulses going out on the pin
+  int mcpwmCode_ = -1;      // MCPWM output claimed once at begin (unit*10+timer*2+op), 999 = LEDC
   uint32_t settledSinceMs_ = 0;
   uint32_t lastUpdateMs_ = 0;
   uint32_t nextGlanceMs_ = 0;

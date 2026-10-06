@@ -3,9 +3,11 @@
 The robot sends one JPEG per binary frame (type byte 0x02). We keep only the
 newest. A tiny HTTP server (standard library, its own thread) serves:
 
-  /          the console page (brain/liveview.html): what Rocky sees and
-             hears, plus controls for his head, face, voice, sleep and
-             listening tuning
+  /          the dashboard page (brain/dashboard.html): what Rocky sees and
+             hears, plus controls for his head, face, voice and sleep. The
+             launcher (server/launcher.py, port 8766) serves the same page with
+             settings and a Start button, and passes the live parts through
+             to this server
   /stream    multipart MJPEG — the newest frame, pushed as it changes
   /frame     the newest frame as a plain JPEG
   /status    JSON: fps, frame age, chip temperature, last transcript, and
@@ -26,6 +28,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import config
+
+_ROTATE_CODES = {90: "ROTATE_90_CLOCKWISE", 180: "ROTATE_180", 270: "ROTATE_90_COUNTERCLOCKWISE"}
+
+
+def rotate_jpeg(jpeg: bytes, deg: int, mirror: bool = False) -> bytes:
+    """Turn a JPEG `deg` degrees clockwise (0 / 90 / 180 / 270), then mirror it left-right if asked. The camera sits
+    on its side in the V2 head and the sensor can only flip, not turn, so frames are turned here. Returns the input
+    unchanged for 0 without mirror, or on any error."""
+    code = _ROTATE_CODES.get(int(deg) % 360)
+    if (code is None and not mirror) or not jpeg:
+        return jpeg
+    import cv2           # only needed when rotating (the tracker imports it anyway)
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return jpeg
+    if code is not None:
+        img = cv2.rotate(img, getattr(cv2, code))
+    if mirror:
+        img = cv2.flip(img, 1)
+    ok, out = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return out.tobytes() if ok else jpeg
 
 
 class Eyes:
@@ -49,6 +73,7 @@ class Eyes:
 
     # ── robot → server ──────────────────────────────────────────────────────
     def push_frame(self, jpeg: bytes) -> None:
+        jpeg = rotate_jpeg(jpeg, config.CAMERA_ROTATE, config.CAMERA_MIRROR)
         now = time.time()
         with self._cond:
             self.jpeg = jpeg
@@ -93,7 +118,7 @@ class Eyes:
     # ── browser ─────────────────────────────────────────────────────────────
     def serve(self, port: int, bind: str = "127.0.0.1") -> None:
         eyes = self
-        page = (Path(__file__).with_name("liveview.html").read_text(encoding="utf-8")
+        page = (Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
                 .replace("{name}", config.ROBOT_NAME).encode())
         local_hosts = ("localhost", "127.0.0.1", "::1", bind.lower())
 
