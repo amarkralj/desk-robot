@@ -3,7 +3,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 
-static const char* FW_VERSION = "0.3.0";
+#include "config.h"   // FW_VERSION
 
 void Link::begin(const char* ssid, const char* pass, const char* host,
                  uint16_t port, const char* token, CommandHandler onCommand,
@@ -38,7 +38,13 @@ void Link::update(uint32_t nowMs) {
   }
   if (!wifiUp) return;  // the WiFi stack reconnects by itself
 
+  // Each ws_.loop() reads at most ONE message. While a reply streams in (ten audio messages a second, plus the
+  // brain's heartbeat replies) a single read per pass of loop() falls behind as soon as a pass also sends a camera
+  // frame: the audio arrives late (gaps), and the heartbeat reply waits behind seconds of audio until the link
+  // gives up on it and drops the connection. So read everything that's waiting, for a few ms at most.
   ws_.loop();
+  uint32_t t0 = millis();
+  for (int i = 0; connected_ && i < 32 && millis() - t0 < 12; ++i) ws_.loop();
 }
 
 void Link::sendJson(const String& json) {
@@ -49,7 +55,7 @@ void Link::sendJson(const String& json) {
 void Link::sendBinary(uint8_t type, const uint8_t* data, size_t len) {
   if (!connected_) return;
   static uint8_t* buf = nullptr;
-  static const size_t CAP = 64 * 1024;  // mic frames are ~1 KB, JPEGs ~10-20 KB
+  static const size_t CAP = 512 * 1024;  // mic frames are ~1 KB, stream JPEGs ~10-20 KB, snapshots up to ~300 KB
   if (buf == nullptr) buf = static_cast<uint8_t*>(ps_malloc(CAP));
   if (buf == nullptr || len > CAP - 1) return;
   buf[0] = type;
@@ -136,8 +142,14 @@ void Link::handleMessage(const char* json) {
   } else if (!strcmp(type, "settings")) {
     if (onSettings_) onSettings_(json);   // structured: not a console command
     return;
+  } else if (!strcmp(type, "face")) {
+    if (onFace_) onFace_(json);
+    return;
+  } else if (!strcmp(type, "snapshot")) {
+    cmd = String("snapshot ") + (doc["size"] | "xga");
   } else if (!strcmp(type, "stream")) {
-    cmd = String("stream ") + ((doc["on"] | false) ? "on " : "off ") + String(doc["fps"] | 10.0f, 1);
+    cmd = String("stream ") + ((doc["on"] | false) ? "on " : "off ") + String(doc["fps"] | 10.0f, 1) + " " +
+          (doc["size"] | "qvga");
   } else {
     Serial.printf("brain: unknown message type \"%s\"\n", type);
     return;

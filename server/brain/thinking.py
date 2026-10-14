@@ -9,7 +9,10 @@ OpenAI all serve, so the provider is a base URL and the model is a string
 Rocky has two real abilities the model can call (tool use): `look` moves
 the head and comes back with a fresh camera frame from the new angle, and
 `track_face` starts/stops following the human. main.py supplies the
-functions that actually do those things.
+functions that actually do those things, plus more tools that change while
+running (the computer abilities in computer.py, offered as `extra_tools()`).
+Abilities in `quick` that succeed after he has said his line end the reply
+there: no second call to the model just to say "done".
 """
 
 from __future__ import annotations
@@ -20,7 +23,6 @@ import os
 import re
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 
 import openai
 
@@ -28,9 +30,11 @@ from . import config
 from . import personality
 
 _EMOTION_TAG = re.compile(r"^\s*\[(\w+)\]\s*", re.S)
-# A sentence ends at . ! or ? followed by a space — but not at an ellipsis:
-# "just... clear answer." is one sentence, not two.
-_SENTENCE_END = re.compile(r"(?<=[!?])\s+|(?<=[^.]\.)\s+")
+# A sentence ends at . ! or ? followed by a space — but not at an ellipsis
+# ("just... clear answer." is one sentence, not two) or a title like "Mr."
+# ("play Mr. Blue Sky" is one sentence too).
+_SENTENCE_END = re.compile(r"(?<=[!?])\s+|(?<=[^.]\.)(?<!\bMr\.)(?<!\bMrs\.)(?<!\bMs\.)(?<!\bDr\.)(?<!\bSt\.)"
+                           r"(?<!\bJr\.)(?<!\bSr\.)(?<!\bvs\.)\s+", re.IGNORECASE)
 
 # An action returns (text for the model, optional fresh camera JPEG).
 Action = Callable[[dict], tuple[str, bytes | None]]
@@ -47,7 +51,8 @@ TOOLS = [
                 "you are already there: the result tells you where your head really "
                 "is and whether it is at a limit. You get a fresh camera image "
                 "afterwards; describe only what that image shows. Your neck turns up "
-                "to 180 degrees left or right and tilts up to 30 degrees up or down."
+                f"to {config.TRACK_PAN_LIMIT:.0f} degrees left or right and tilts up to "
+                f"{config.TRACK_TILT_MAX:.0f} degrees up or {-config.TRACK_TILT_MIN:.0f} down."
             ),
             "parameters": {
                 "type": "object",
@@ -62,7 +67,11 @@ TOOLS = [
                     },
                     "degrees": {
                         "type": "number",
-                        "description": "How far: 5-180 for left/right, 5-30 for up/down. Omit for a normal look.",
+                        "description": (
+                            f"How far: 5-{config.TRACK_PAN_LIMIT:.0f} for left/right, "
+                            f"5-{max(config.TRACK_TILT_MAX, -config.TRACK_TILT_MIN):.0f} for up/down. "
+                            "Omit for a normal look."
+                        ),
                     },
                 },
                 "required": ["direction"],
@@ -84,12 +93,6 @@ TOOLS = [
 ]
 
 
-@dataclass
-class Reply:
-    text: str
-    emotion: str
-
-
 class Interrupted(Exception):
     """The human started talking again; drop this reply."""
 
@@ -100,21 +103,22 @@ def _image_part(jpeg: bytes) -> dict:
 
 
 class RobotBrain:
-    def __init__(self, actions: dict[str, Action] | None = None) -> None:
+    def __init__(self, actions: dict[str, Action] | None = None,
+                 extra_tools: Callable[[], list[dict]] | None = None, quick: set[str] | None = None) -> None:
         self.client = openai.OpenAI(
             base_url=config.LLM_BASE_URL,
             api_key=os.environ.get("LLM_API_KEY", "missing"),
             default_headers={"X-Title": "desk-robot"},  # shows up in OpenRouter's usage page; others ignore it
         )
+        # OpenRouter's switch for the model's hidden reasoning (config.LLM_REASONING); other providers get nothing extra.
+        self._extra = {} if config.LLM_REASONING or "openrouter.ai" not in config.LLM_BASE_URL else \
+            {"reasoning": {"enabled": False}}
         self.history: list[dict] = []
         self.actions = actions or {}
+        self.extra_tools = extra_tools or (lambda: [])
+        self.quick = quick or set()
         self.emotion = "neutral"        # emotion of the reply in progress
         self._inflight: tuple[int, dict] | None = None  # (index, user message) being answered
-
-    def ask(self, question: str, jpeg: bytes | None = None, camera_wanted: bool = False) -> Reply:
-        """The whole reply at once. See reply() for the streaming form."""
-        sentences = list(self.reply(question, jpeg, camera_wanted=camera_wanted))
-        return Reply(" ".join(sentences), self.emotion)
 
     def reply(
         self,
@@ -123,6 +127,8 @@ class RobotBrain:
         on_emotion: Callable[[str], None] | None = None,
         cancelled: threading.Event | None = None,
         camera_wanted: bool = False,
+        notes: str = "",
+        passive: bool = False,
     ) -> Iterator[str]:
         """Rocky's reply, one sentence at a time as the model writes it.
 
@@ -132,10 +138,16 @@ class RobotBrain:
         generator early, and the question is dropped from his memory as if it
         was never asked. `camera_wanted` with no `jpeg` means the question
         was about seeing but the camera had no fresh picture; he's told so,
-        otherwise he answers from memory and claims to see things.
+        otherwise he answers from memory and claims to see things. `notes` is perception's line about what the
+        camera's detectors notice; `passive` = the picture came along for context, not because he was asked to look.
         """
         content: list[dict] = [{"type": "text", "text": question}]
-        if jpeg is not None:
+        if notes:
+            content.append({"type": "text", "text": notes})
+        if jpeg is not None and passive:
+            content.append({"type": "text", "text": "(Live picture from your camera, taken just now, for context. Use it if it helps; don't describe it unless the question is about it.)"})
+            content.append(_image_part(jpeg))
+        elif jpeg is not None:
             content.append({"type": "text", "text": "(Live picture from your camera, taken just now, because the question seems to be about what you can see. If it isn't, ignore the picture.)"})
             content.append(_image_part(jpeg))
         elif camera_wanted:
@@ -199,6 +211,7 @@ class RobotBrain:
         Yields sentences as they complete."""
         nudged = False
         limit = config.REPLY_MAX_SENTENCES
+        said = 0                 # sentences spoken so far in this reply, across rounds
         for _ in range(5):
             if cancelled.is_set():
                 raise Interrupted()
@@ -206,14 +219,16 @@ class RobotBrain:
                 model=config.MODEL,
                 max_tokens=200,  # backstop; the sentence limit does the real work
                 messages=[{"role": "system", "content": personality.SYSTEM_PROMPT}, *self.history],
-                tools=TOOLS if self.actions else openai.NOT_GIVEN,
+                tools=[*TOOLS, *self.extra_tools()] if self.actions else openai.NOT_GIVEN,
                 stream=True,
+                extra_body=self._extra,
             )
             buf = ""                 # text not yet released as a sentence
             raw: list[str] = []      # everything the model wrote this round
             tag_decided = False
             calls: dict[int, dict] = {}
             spoken = 0
+            capped = False           # said all he may; still listen for an ability he asks for after it
             try:
                 for chunk in stream:
                     if cancelled.is_set():
@@ -230,7 +245,7 @@ class RobotBrain:
                                 entry["name"] = tc.function.name
                             if tc.function.arguments:
                                 entry["arguments"] += tc.function.arguments
-                    if not delta.content:
+                    if not delta.content or capped:
                         continue
                     raw.append(delta.content)
                     buf += delta.content
@@ -245,6 +260,7 @@ class RobotBrain:
                         s = parts.pop(0).strip()
                         if s:
                             spoken += 1
+                            said += 1
                             yield s
                         if spoken >= limit:
                             break
@@ -252,7 +268,7 @@ class RobotBrain:
                     if spoken >= limit:
                         print(f"  (trimmed reply to {limit} sentences)")
                         buf = ""
-                        break
+                        capped = True
             finally:
                 stream.close()
 
@@ -264,6 +280,7 @@ class RobotBrain:
             if calls:
                 # He decided to do something: say any lead-in, run it, tell him what happened.
                 if buf.strip():
+                    said += 1
                     yield buf.strip()
                     buf = ""
                 self.history.append({
@@ -276,6 +293,7 @@ class RobotBrain:
                     ],
                 })
                 fresh: bytes | None = None
+                all_quick = True
                 for _, c in sorted(calls.items()):
                     if cancelled.is_set():
                         raise Interrupted()
@@ -284,15 +302,18 @@ class RobotBrain:
                     except json.JSONDecodeError:
                         args = {}
                     action = self.actions.get(c["name"])
+                    ok = False
                     if action is None:
                         text = f"unknown ability {c['name']}"
                     else:
                         try:
                             text, img = action(args)
+                            ok = True
                         except Exception as e:  # the robot didn't cooperate; say so
                             text, img = f"could not do that: {e}", None
                         if img:
                             fresh = img
+                    all_quick = all_quick and ok and c["name"] in self.quick
                     print(f"  [{c['name']} {args} -> {text}]")
                     self.history.append({"role": "tool", "tool_call_id": c["id"], "content": text})
                 if fresh is not None:
@@ -300,6 +321,8 @@ class RobotBrain:
                         "role": "user",
                         "content": [{"type": "text", "text": "Camera view after moving:"}, _image_part(fresh)],
                     })
+                if all_quick and said:
+                    return   # done, and he already said so
                 continue
 
             if not "".join(raw).strip() and not nudged:

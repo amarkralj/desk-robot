@@ -16,6 +16,13 @@ firmware/include/secrets.h
 
 # Dashboard settings: personal (your location, your name)
 server/settings.json
+# Perception models: downloaded on first run (brain/perception.py), pinned and checksummed
+server/models/*.task
+server/models/rfdetr_*.onnx
+server/models/siglip_*
+
+# Face packs made in the dashboard (export one to share it)
+server/faces/custom/
 
 # macOS and editors
 .DS_Store

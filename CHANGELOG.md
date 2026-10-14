@@ -5,8 +5,32 @@ latest work. A video matches the tagged version it was made with.
 
 ## Unreleased (V2, in progress)
 
-- New 3D-printed pan/tilt neck: geared 360° pan, unrestricted tilt, flat
-  head plate. Replaces the off-the-shelf SG90-style bracket.
+Hardware:
+
+- New 3D-printed neck and head with MG90S servos: pan geared up 38:30
+  (±95°), tilt ±85°, the 2.42" SSD1309 screen, the camera on its side in
+  the head, the Dayton CE32A-8 speaker and the amp in the head, power in at
+  the base. Replaces the off-the-shelf SG90 bracket.
+- Custom head and base boards in place of the perfboards (sold with the
+  print files and the wiring guide).
+
+Software:
+
+- Clock and weather screen while Rocky is asleep, run by the robot itself.
+- Dashboard (`server/launcher.py`, http://localhost:8766/): live view,
+  settings saved in `server/settings.json`, face packs, server log, and a
+  Start / Stop button for the brain.
+- Face packs: twelve emotions, four built-in looks, your own made in the
+  dashboard.
+- Seeing: a picture with every question, sharp stills when he looks, and
+  local models that notice people, faces, gestures and objects. A wave
+  wakes him.
+- Voice tuned for the CE32A-8 (bass cut at 300 Hz, peaks kept under the
+  amp's clean limit).
+- Language model: Claude Haiku 5.5 (was Haiku 4.5).
+- Assembly mode (BOOT button) centres both servos for fitting the gears.
+- Body language: small head moves with his emotion while he talks, and a
+  thinking glance; still while asleep, tracking, or taking a picture.
 
 ## v1.0 - 2026-09-22
 

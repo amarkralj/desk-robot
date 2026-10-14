@@ -12,9 +12,12 @@ and speaks the reply through the robot's speaker.
 
 **V1 is the robot in the videos.** It is frozen as the
 [v1.0 release](https://github.com/cgro00/desk-robot/releases/tag/v1.0), a
-permanent snapshot of the code, wiring, and parts list as built. `main` is
-always the latest version and may be ahead of what an older video shows.
-[CHANGELOG.md](CHANGELOG.md) lists what changed between versions.
+permanent snapshot of the code, wiring, and parts list as built: an
+off-the-shelf pan-tilt bracket and a breadboard, no 3D printing. `main` is
+V2, in progress: a printed neck and head, a bigger screen, and the speaker in
+the head. This README and the firmware settings are for V2; to build V1, use
+the v1.0 release's README and code. [CHANGELOG.md](CHANGELOG.md) lists what
+changed between versions.
 
 Out of the box it is **Rocky**, the Eridian engineer from *Project Hail
 Mary*: short sentences, "question" and "answer", "amaze", and constant
@@ -24,9 +27,11 @@ See [Make it your own](#make-it-your-own).
 **What it can do**
 
 - Wake on its name, listen, and answer with a spoken reply in a cloned voice.
-- Show seven expressions on its face, blink, and doze off when ignored.
+- Show twelve expressions on its face, in a look you pick or design, blink,
+  and doze off when ignored.
 - Turn and nod its head, follow your face, and look where you ask.
-- See through its camera and tell you what is there, honestly.
+- See through its camera and tell you what is there, honestly, and notice
+  what you're doing: who's there, gestures, expressions, what you're holding.
 - Decide when you have finished talking, the way a person does, instead of
   waiting for a fixed pause.
 
@@ -64,18 +69,21 @@ Nothing is billed while the robot is idle.
 
 ## What you need
 
-**Parts.** Roughly $100 in total, plus a soldering iron if you do not have
-one. Everything is a common Amazon or Adafruit item.
+**Parts (V2).** Roughly $100, plus a soldering iron and a 3D printer.
 
 | Part | Notes |
 | --- | --- |
-| Seeed XIAO ESP32S3 **Sense** | The Sense version has the camera and microphone built in. Get it with headers pre-soldered if you can. The little U.FL antenna in the box is required for WiFi. |
-| 1.3" SH1106 I2C OLED, 128x64 | The face. The 0.96" SSD1306 also works with a one-line firmware change. |
-| Adafruit Mini Pan-Tilt kit, assembled | The neck. It ships with two SG90 servos, which work. MG90S metal-gear servos are a drop-in upgrade for smoother motion. |
-| MAX98357A I2S amplifier board | Turns digital audio into speaker power. The $3 clones work. |
-| Small 4 Ω 3 W speaker | Enclosed ones with a JST lead are easiest to mount. |
-| 470 to 1000 µF electrolytic capacitor | Keeps the servos from browning out the board. Not optional. |
-| Breadboard, jumper wires, M2/M2.5 nylon standoffs | For wiring and mounting the screen. |
+| Seeed XIAO ESP32S3 **Sense** | The Sense version has the camera and microphone built in. The little U.FL antenna in the box is required for WiFi. |
+| 2.42" SSD1309 I2C OLED, 128x64 | The face (HiLetgo's board, 70 x 48 mm). V1's 1.3" SH1106 also works: set `OLED_SSD1309_242` to 0 in `firmware/include/config.h`. |
+| 2 x MG90S metal-gear servos | Pan and tilt. |
+| The printed neck and head | Base and dome, turntable (with the 30-tooth pan gear built in), the 38-tooth pinion, head plate, head shell, and its face and back lids. The print files are sold separately on my website. |
+| MAX98357A I2S amplifier board | In the head. The $3 clones work. |
+| Dayton Audio CE32A-8 speaker | 1¼", 8 Ω, 2 W, on the head's back lid. The voice is tuned for it; another small 4–8 Ω speaker works, see [Change the voice](#change-the-voice) to retune. |
+| USB-C breakout board | Power comes in at the base. |
+| 470 µF 10 V electrolytic capacitor, 1N5817 Schottky diode | Keep the servos from browning out the board, and the XIAO's own USB port from feeding them. Not optional. |
+| The head and base boards, or perfboard | The custom boards come with the print files and the wiring guide. |
+| 3-pin servo extension cable | The neck cable, up through the hollow post. |
+| M2 and M3 screws, M3 heat-set inserts | For the screen, the neck, and the base. |
 | 5 V, 2 A or better USB-C power supply | A laptop port is fine for flashing, not for running servos and speaker. |
 
 **On the computer side.**
@@ -95,25 +103,18 @@ one. Everything is a common Amazon or Adafruit item.
   speaks with your computer's built-in voice, which is fine for getting
   started.
 
-**Skills.** Basic soldering (about 27 joints, all through-hole), and the
-patience to read the wiring guide before powering anything on.
+**Skills.** Basic through-hole soldering, and the patience to read the
+wiring guide before powering anything on.
 
 ## Build the body
 
-Follow [`docs/wiring.md`](docs/wiring.md) with the parts in hand. The short
-version:
+The V2 wiring guide, the custom boards and the print files are sold
+separately on my website. The camera and microphone are on the Sense board
+already, so they need no wiring.
 
-1. Everything shares a ground rail.
-2. Servos and the amplifier run from the XIAO's **5 V** pin, never 3.3 V.
-3. The big capacitor goes across 5 V and ground, striped leg to ground.
-4. The OLED is on I2C (D4/D5), the servos on D3 (pan) and D8 (tilt), the
-   amplifier on D0, D1, D2.
-5. The camera and microphone are on the Sense board already. No wiring.
-
-Only the OLED and the XIAO ride on the pan-tilt head. The amplifier,
-speaker, breadboard, and capacitor stay on the desk. There is no printed
-shell yet, so mount the screen on a small plate on the tilt platform with
-standoffs or foam tape, with the camera peeking over the top edge.
+The pan servo, the power input and the base board sit in the base; the XIAO,
+the screen, the amp, the speaker and the head board ride in the head, with
+the tilt servo under it. A 3-wire cable up the hollow post joins the two.
 
 ## Flash the firmware and test over USB
 
@@ -133,24 +134,28 @@ Do this before WiFi. It proves the face and the neck work.
    pio device monitor        # serial console at 115200
    ```
 
-3. The eyes should open, blink, and look around on their own. In the serial
-   console, try:
+3. The screen starts on the clock (it waits for WiFi, so it shows
+   `--:--`). In the serial console, try:
 
    ```
    help                 list commands
-   emo happy            change the face: neutral/happy/sad/angry/surprised/sleepy/thinking
-   pan -30              turn the head, -60..60, 0 = center
-   tilt -20             nod the head, -60 (down)..0 (level)
-   blink                blink once
-   demo off             stop the idle behaviour
+   sleep off            wake him: the face replaces the clock
+   emo happy            change the face (twelve: neutral, happy, sad, angry, surprised, sleepy,
+                        thinking, curious, skeptical, excited, love, confused)
+   demo on              cycle through the faces on his own
+   pan 30               turn the head, -95 (his left)..95 (his right), 0 = center
+   tilt 15              nod the head, -85 (down)..85 (up), 0 = level
+   center               head straight ahead and level
+   assembly on          both servos to centre and hold, for fitting the gear and horn
    raw tilt 20          calibration move that ignores the limits (watch it!)
    ```
 
-4. Check the head's manners. If `tilt -20` looks up instead of down, flip
-   `TILT_INVERT` in `firmware/include/config.h`. If the head is not straight
-   or level at 0, adjust `PAN_TRIM_DEG` and `TILT_TRIM_DEG` a few degrees at
-   a time. If the tilt bracket strains at the end of its travel, pull the
-   `TILT_MIN_DEG` and `TILT_MAX_DEG` limits in. Re-flash after each change.
+4. Check the head's manners, with small moves first: `tilt 15` must look
+   up and `pan 30` must turn to his right (your left, facing him). If not,
+   flip `TILT_INVERT` or `PAN_INVERT` in `firmware/include/config.h`. If the
+   head is not straight or level at 0, adjust `PAN_TRIM_DEG` and
+   `TILT_TRIM_DEG` a few degrees at a time. Re-flash after each change.
+   [`docs/wiring.md`](docs/wiring.md#first-power-up) has the details.
 
 Without a `secrets.h` file the firmware stays in this USB-only mode, which
 is useful whenever you want to test the body alone.
@@ -203,7 +208,7 @@ To have the dashboard there whenever you log in, run
 
 ### The dashboard
 
-<http://localhost:8766/> has three tabs, and only answers this computer:
+<http://localhost:8766/> has four tabs, and only answers this computer:
 
 - **Live**: what Rocky sees and hears, the last exchange, and buttons for
   his head, face, sleep, and words to say. Start, Restart, and Stop for the
@@ -216,6 +221,11 @@ To have the dashboard there whenever you log in, run
   speaker volume, where his voice plays, the camera rotation, and an
   Advanced section with the listening and voice tuning. Settings work with
   the server stopped; the robot gets them the next time it connects.
+- **Faces**: face packs, the look of Rocky's eyes. Every face in a pack is
+  shown moving the way it will on the robot; pick a pack with **Use this
+  pack**, or duplicate one and change any face with sliders (both eyes or
+  one at a time, flourishes like blush, tears, hearts or a "?"), watching
+  it on the robot as you go. See [Change the face](#change-the-face).
 - **Log**: the server's output, and a box for console commands. It is kept
   in memory only, and speech Rocky heard but ignored shows without its
   words.
@@ -268,6 +278,16 @@ speaks, he drops the reply and answers the whole thing once. Once he is
 speaking he finishes the line, because his microphone is muted while his
 own voice plays.
 
+While he talks his head moves a little with how he feels: a happy bounce, a
+surprised pull-back, a sad droop, a curious lean, a confused look from side to
+side, then a small nod or drift every few seconds until he finishes (with
+pauses long enough for the servos to go quiet), and a glance up while he
+works out a reply. He keeps still while asleep, while following your face,
+and once he turns to look at something: the picture stays sharp, and he keeps
+looking at it, servos quiet, while he tells you about it. The
+moves are in `server/brain/body.py`; switch them off with *Body language* in
+the dashboard's Rocky card.
+
 Server console commands, for when talking is inconvenient:
 
 ```
@@ -278,11 +298,43 @@ listen               toggle the microphone
 mic                  three-second level meter
 track on|off         face tracking
 emo surprised        push a face
+gesture curious      try an emotion's body language
 pan 20 / tilt -20    move the head
 status               what is connected
 ```
 
 Every reply prints a `timing` line so you can see where the seconds go.
+
+### What Rocky sees
+
+While he's awake, every question goes to the model with a picture from his
+camera, so he knows what you're doing without being asked to look. When the
+question is about seeing ("what am I holding?"), the picture is a sharp
+1024×768 still that the robot takes while you're still talking, so it costs
+no time. The stream itself is 640×480 for face tracking and the models
+below (320×240 in Settings > Vision if your WiFi is weak).
+
+Small models on your computer also watch the stream a few times a second
+and give him a one-line note with each question ("one person about 1 m
+away, looking at you, smiling, holding a cup; also in view: laptop,
+keyboard"):
+
+- **Objects**: [RF-DETR](https://github.com/roboflow/rf-detr) Nano finds
+  them (it knows 80 everyday kinds), and Google's
+  [SigLIP](https://huggingface.co/google/siglip-base-patch16-224) names
+  each one, and whatever is in your hand, from a list of about 190 everyday
+  and maker things (pen, circuit board, breadboard, multimeter, soldering
+  iron, mug...). Add your own under Settings > Vision > Your things; describe
+  how it looks ("green circuit board") rather than a nickname.
+- **Hands**: [MediaPipe](https://ai.google.dev/edge/mediapipe) gestures:
+  thumbs up and down, open hand, fist, peace sign, pointing, and a wave.
+- **Faces**: MediaPipe face landmarks: smiling, eyes closed, looking at him
+  or away, roughly how far.
+
+A wave wakes him up, and a thumbs up or down shows on his face. The
+dashboard's Live tab shows what the models notice (with boxes on the
+camera view), and Settings > Vision turns each part on or off. The models
+(about 250 MB) download on the first start, pinned and checksummed.
 
 ### The clock screen
 
@@ -298,6 +350,45 @@ until you do, the clock shows no weather. The robot keeps its settings in
 flash, so a power cut doesn't lose them. Against OLED burn-in the clock
 shifts a pixel or two every minute, and by default it dims from 23:00 to
 07:00 (or turns the screen off, if you choose that).
+
+### Let him use your computer
+
+Off until you switch it on in Settings > Computer ("Let Rocky use my
+computer"); the dashboard remembers your choice. Then:
+
+- **"Look up an Arduino on Amazon"**: searches Google, Google Images,
+  Amazon, YouTube, Maps, Wikipedia, GitHub, eBay or Reddit.
+- **"Open YouTube"**: those sites, Gmail, and bookmarks you add.
+- **"Open Spotify"**: apps on the list in the same card.
+- **"Play Mr. Blue Sky"**, **"put on some Daft Punk"**: finds a song,
+  artist, album or playlist on Spotify and plays it (needs a Spotify key,
+  below). **"What's playing?"**, **"pause"**, **"next song"** work without one,
+  in Spotify or Apple Music.
+- **"Turn the volume down"**: this computer's sound (not on an audio
+  interface, whose volume macOS can't set).
+- **"Run Lights off"**: Apple Shortcuts you pick from the list. He asks
+  first, and runs it after you say yes.
+
+He can't type, click, log in or buy anything, and every address and
+command is built by the server from those lists, never by the model. At
+most 3 actions per question and 8 a minute. Each one shows up on the
+dashboard and in the log. Opening a page costs no extra AI call, so it's as
+fast and cheap as a normal answer. The first music command makes macOS
+ask whether the server may control Spotify or Music: allow it.
+
+**Spotify key** (for playing by name; Spotify only gives these to Premium
+accounts):
+
+1. Sign in at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+   and click **Create app**. Any name and description; Redirect URI
+   `http://127.0.0.1:8766/`; tick **Web API**; save.
+2. Open the app's **Settings** and copy the **Client ID** and **Client
+   secret** into `server/.env` as `SPOTIFY_CLIENT_ID` and
+   `SPOTIFY_CLIENT_SECRET`. Outside the US, set `SPOTIFY_MARKET` to your
+   two-letter country code.
+3. Restart the server. Settings > Computer says "Key found".
+
+Without a key he opens Spotify's search for you to pick from.
 
 ## Make it your own
 
@@ -343,10 +434,15 @@ Without a Fish key he uses the computer's built-in voice: on macOS,
 `TTS_FALLBACK_VOICE` picks one (`say -v ?` lists them); Windows uses its
 default voice; Linux uses `espeak-ng` if installed.
 
-The robot's speaker is tiny, so a deep voice turns into rattle. Three knobs
+The robot's speaker is tiny, so a deep voice turns into rattle. Four knobs
 in `config.py` shape the audio before it reaches the speaker: `TTS_LEVEL`
-(loudness he is held to), `TTS_HIGHPASS_HZ` (bass cut, try 250 to 350 for a
-deep voice), and `TTS_PRESENCE_DB` (lift for a muffled voice). The
+(loudness he is held to), `TTS_HIGHPASS_HZ` (bass cut), `TTS_PRESENCE_DB`
+(lift for a muffled voice), and `TTS_PEAK` (how close the loudest moments
+get to the amp's limit). They are set for the Dayton CE32A-8: the bass cut
+sits at 300 Hz, just above the speaker's 274 Hz resonance, because below
+that its tiny cone only rattles; and peaks stop about 2 dB short of where
+the MAX98357A amp starts to distort into 8 Ω. With another speaker, put the
+bass cut just above its resonance (Fs, on its spec sheet). The
 dashboard's Settings tab has sliders for all three under Advanced, so you
 can dial them in while he talks; they are saved in `server/settings.json`. If a voice keeps misbehaving, `DEBUG_SAVE_TTS`
 in `config.py` keeps the last 30 spoken clips and their text in
@@ -359,7 +455,7 @@ OpenAI all serve. Pick one in `config.py`:
 
 | Provider | `LLM_BASE_URL` | `MODEL` example | Key in `.env` |
 | --- | --- | --- | --- |
-| OpenRouter (default) | `https://openrouter.ai/api/v1` | `anthropic/claude-haiku-4.5` | OpenRouter key |
+| OpenRouter (default) | `https://openrouter.ai/api/v1` | `anthropic/claude-haiku-5.5` | OpenRouter key |
 | Anthropic | `https://api.anthropic.com/v1/` | `claude-haiku-4-5` | Anthropic key |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4.1-mini` | OpenAI key |
 
@@ -367,8 +463,8 @@ Whichever you choose, the key goes in `LLM_API_KEY` in `server/.env`. The
 model must accept images (Rocky sends camera frames) and tool calls (he
 moves his head with them). A small, fast model is the right choice here:
 replies are three sentences, and character matters more than reasoning.
-Haiku has been the best at staying in character; a few dollars a month
-covers a lot of chatting. The project was built and tested through
+Haiku has been the best at staying in character, and Haiku 5.5 comes to
+about $0.0005 a question, picture included. The project was built and tested through
 OpenRouter. Anthropic documents streaming, tool calls, and image input on
 its OpenAI-compatible endpoint, which is everything this project uses, but
 describes it as a compatibility layer rather than the main road.
@@ -384,18 +480,46 @@ computer should use a specific microphone. The dashboard has sliders for the
 listening knobs and how long he stays awake; changes apply immediately and
 are saved in `server/settings.json`, which overrides `config.py`.
 
+### Change the face
+
+Pick a face pack in the dashboard's Faces tab. Four come built in: Rocky's
+own, Blocky (big square eyes), Bean (small eyes and a mouth that smiles),
+and Visor (one wide bar). To make your own, duplicate one and change it
+there; it is saved in `server/faces/custom/` (git-ignored). **Export** gives
+you the file to share and **Import** takes someone else's.
+
+A pack is one JSON file (the format is at the top of
+`server/brain/faces.py`). Each of the twelve emotions (neutral, happy, sad,
+angry, surprised, sleepy, thinking, curious, skeptical, excited, love,
+confused) gives each eye a size, corner rounding, slanted top and bottom
+edges, an upper lid and a cheek, plus where the eyes look and which
+flourishes play. The robot keeps the pack in flash. To share a pack with
+everyone, put it in `server/faces/` and open a pull request.
+
+The emotion list lives in `server/brain/faces.py` and the firmware's
+`face.cpp`; the model chooses from it on every reply. The dashboard's
+preview is a copy of the firmware's drawing code (in `dashboard.html`), so
+change both together.
+
 ### Change the body
 
-`firmware/include/config.h` has the pin map, the head's range and speed
-limits, servo trims, speaker volume, microphone gain, and camera flips. The
-OLED driver line is near the top of `firmware/src/main.cpp` if you use a
-different panel. The expressions themselves are drawn in `face.cpp`.
+`firmware/include/config.h` has the pin map, which screen and which way up,
+the head's range and speed limits, the pan gear ratio, servo trims, speaker
+volume, microphone gain, and camera flips. If you change the head's range,
+change `TRACK_PAN_LIMIT` and `TRACK_TILT_MIN`/`MAX` in `server/brain/config.py`
+to match: the brain uses them for tracking, the dashboard's sliders, and
+what Rocky is told he can do. A different screen driver goes near the top of
+`firmware/src/main.cpp`.
 
 ## Troubleshooting
 
 - **The OLED stays black.** SDA and SCL are swapped, or a jumper is loose.
 - **The board reboots when the head moves.** The servos are on 3.3 V, or the
-  capacitor is missing, or you are on a laptop USB port. Use a 5 V 2 A supply.
+  capacitor is missing, or the supply is too weak. Use a 5 V 2 A supply in
+  the base. The serial console's `boot:` line says `BROWNOUT` when this is
+  why it restarted.
+- **The servos don't move at all.** The base supply isn't plugged in: the
+  XIAO's own USB-C only powers the XIAO.
 - **`wifi: joining` forever.** The network is 5 GHz only, or the antenna is
   not clipped on. Make a 2.4 GHz network or band.
 - **The robot prints `brain: connected` then `brain: disconnected, will
@@ -424,7 +548,7 @@ different panel. The expressions themselves are drawn in `face.cpp`.
 ## How it works
 
 - **Firmware** (`firmware/src/`): `face.cpp` draws the eyes and mouth at 30
-  fps, `servo_neck.cpp` eases the head with speed limits, `camera.cpp`
+  fps from the face pack, `servo_neck.cpp` eases the head with speed limits, `camera.cpp`
   keeps the latest JPEG in memory, `mic.cpp` streams 16 kHz audio, and
   `speaker.cpp` plays whatever the brain sends. `home_screen.cpp` is the
   clock and weather screen. `link.cpp` is the WebSocket
@@ -435,7 +559,8 @@ different panel. The expressions themselves are drawn in `face.cpp`.
   model, streams the reply sentence by sentence, and gives the model two
   tools: `look` (move the head, take a picture) and `track_face`.
   `mouth.py` turns text into audio with Fish Audio and levels it for the
-  small speaker. `tracker.py` follows faces with OpenCV. `eyes.py` serves
+  small speaker. `tracker.py` follows faces with OpenCV. `perception.py`
+  notices people, gestures and objects. `eyes.py` serves
   the camera and the Live page. `settings.py` reads and writes
   `settings.json`. `main.py` ties it together.
 - **Launcher** (`server/launcher.py`): the dashboard on port 8766. It starts
@@ -448,7 +573,7 @@ different panel. The expressions themselves are drawn in `face.cpp`.
 Tests run with no hardware and no downloads:
 
 ```bash
-cd server && python -m unittest tests/test_personality.py tests/test_segmenter.py tests/test_settings.py
+cd server && python -m unittest tests/test_personality.py tests/test_segmenter.py tests/test_settings.py tests/test_faces.py tests/test_perception.py tests/test_tracker.py tests/test_playback.py tests/test_body.py
 ```
 
 ## Privacy and security
@@ -464,16 +589,21 @@ cd server && python -m unittest tests/test_personality.py tests/test_segmenter.p
   hosts. Opening it to the LAN would let anyone on your WiFi watch the
   camera and read transcripts.
 - **Voice is unauthenticated by design.** Anyone in earshot can say "hey
-  Rocky". All he can do is move his head and spend a fraction of a cent.
+  Rocky". All he can do is move his head and spend a fraction of a cent,
+  plus, if you switch on computer control, open the sites, apps, music and
+  Shortcuts on your lists (no typing, clicking or buying).
 - **What leaves your computer:** each question sends the transcript, the recent
-  conversation, your name from `HUMAN_NAME`, and the newest camera frame
-  (only for visual questions) to your model provider, and each reply's text
-  to Fish Audio if configured. Speech-to-text and face tracking run
-  locally. The first run downloads speech models from Hugging Face and
-  GitHub, pinned to fixed versions. The dashboard page loads nothing from
+  conversation, your name from `HUMAN_NAME`, a camera picture and the
+  perception note (while he's awake; turn "A picture with every question"
+  off in Settings > Vision to send pictures only for visual questions) to
+  your model provider, and each reply's text to Fish Audio if configured.
+  Speech-to-text, face tracking and perception run locally. The first run
+  downloads speech and vision models from Hugging Face, GitHub and Google,
+  pinned to fixed versions. The dashboard page loads nothing from
   the internet. The robot asks an internet time server for the time, and
   Open-Meteo for the weather at the location you set (rounded to about
   10 m); the dashboard's town search sends what you type to Open-Meteo.
+  With a Spotify key, "play ..." sends the search words to Spotify.
 - **What is stored:** the in-memory conversation and your dashboard
   settings (`server/settings.json`, and the clock part in the robot's
   flash). The dashboard's log lives in memory and is gone when the launcher

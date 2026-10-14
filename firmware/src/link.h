@@ -26,6 +26,8 @@ class Link {
   void onAudio(AudioHandler h) { onAudio_ = std::move(h); }
   // The brain's `settings` message (clock / weather / screen), passed on as the raw JSON.
   void onSettings(SettingsHandler h) { onSettings_ = std::move(h); }
+  // The brain's `face` message (a face pack), passed on as the raw JSON.
+  void onFace(SettingsHandler h) { onFace_ = std::move(h); }
 
   // Call every loop().
   void update(uint32_t nowMs);
@@ -35,7 +37,7 @@ class Link {
   // Robot → server. Text is sent as-is (should be JSON).
   void sendJson(const String& json);
   void sendState(float panDeg, const char* emotion);
-  // Binary frame: one type byte (0x01 = mic audio, 0x02 = JPEG) + payload.
+  // Binary frame: one type byte (0x01 = mic audio, 0x02 = stream JPEG, 0x03 = snapshot JPEG) + payload.
   void sendBinary(uint8_t type, const uint8_t* data, size_t len);
 
  private:
@@ -47,10 +49,10 @@ class Link {
   StateHandler onState_;
   AudioHandler onAudio_;
   SettingsHandler onSettings_;
+  SettingsHandler onFace_;
   const char* ssid_ = nullptr;
   const char* pass_ = nullptr;
   const char* token_ = "";
   bool connected_ = false;
   bool wifiReported_ = false;
-  uint32_t nextStateMs_ = 0;
 };

@@ -31,7 +31,7 @@ HUMAN_NAME = _settings.load()["rocky"]["human_name"] or os.environ.get("HUMAN_NA
 # because one key reaches every model, and the model is just a string:
 #
 #   provider    LLM_BASE_URL                       MODEL (examples)
-#   OpenRouter  https://openrouter.ai/api/v1       anthropic/claude-haiku-4.5   (best at staying in character, ~$1-4/month)
+#   OpenRouter  https://openrouter.ai/api/v1       anthropic/claude-haiku-5.5   (fast, stays in character, ~$0.0005 a question)
 #                                                  google/gemini-2.5-flash-lite (cheapest that still sounds like Rocky)
 #                                                  openai/gpt-4.1-mini          (middle ground)
 #   Anthropic   https://api.anthropic.com/v1/      claude-haiku-4-5
@@ -40,7 +40,11 @@ HUMAN_NAME = _settings.load()["rocky"]["human_name"] or os.environ.get("HUMAN_NA
 # The model must accept images (Rocky sends camera frames) and tool calls
 # (he moves his head with them).
 LLM_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL = "anthropic/claude-haiku-4.5"
+MODEL = "anthropic/claude-haiku-5.5"
+# Haiku 5.5 thinks before it answers unless told not to: hidden reasoning that delays his first word by a second or
+# more, and with a picture can use up the whole reply so he says nothing. His replies are a few sentences in
+# character, not puzzles, so it's off. Sent to OpenRouter only (its "reasoning" option); other providers get nothing.
+LLM_REASONING = False
 
 # WebSocket port the robot connects to.
 PORT = 8765
@@ -60,9 +64,11 @@ PORT = 8765
 #                 anything past it before it's spoken (keeps voice cost down).
 #   TTS_LEVEL     loudness the voice is held to (RMS, 0..1; see TTS_MAX_GAIN).
 #   TTS_HIGHPASS_HZ
-#                 bass cut before the speaker, 0 = off. The small speaker
-#                 can't reproduce bass; it just rattles the shell. A deep
-#                 voice wants 250-350.
+#                 bass cut before the speaker (24 dB/octave), 0 = off. Set for
+#                 the Dayton Audio CE32A-8 (1-1/4", 8 ohm): it resonates at
+#                 274 Hz and its cone moves only 0.7 mm, so anything lower
+#                 can't be heard, only felt as rattle and distortion. A
+#                 different small speaker: just above its resonance (Fs).
 #   TTS_PRESENCE_DB
 #                 boost above ~1.5 kHz, where speech clarity lives, 0 = off.
 #                 Lifts a muffled voice; too much sounds thin and hissy.
@@ -73,7 +79,7 @@ TTS_TEMPERATURE = 0.4
 TTS_TOP_P = 0.6
 REPLY_MAX_SENTENCES = 3
 TTS_LEVEL = 0.12
-TTS_HIGHPASS_HZ = 0.0
+TTS_HIGHPASS_HZ = 300.0
 TTS_PRESENCE_DB = 0.0
 
 # Text-to-speech. The voice comes from Fish Audio (TTS_VOICE_ID above).
@@ -87,6 +93,10 @@ TTS_FALLBACK_VOICE = "Fred"  # built-in voice used until Fish Audio is set up: a
 # the limiter and the amp near clipping (crackly, muffled). Raise the
 # robot's `volume` for everyday loudness, not this.
 TTS_MAX_GAIN = 6.0
+# The loudest a sample may get (0..1 of full scale) before the robot's volume. The MAX98357A amp at its default
+# 9 dB gain asks for about 1.6 W into an 8 ohm speaker at full scale but stays clean only to about 1.4 W, and less
+# when the servos pull the 5 V supply down, so the very top is reserved: peaks stop about 2 dB short of it.
+TTS_PEAK = 0.8
 # Diagnostics, both off by default so nothing is written to disk. DEBUG_SAVE_TTS
 # saves each spoken clip and its text to server/debug/tts/ (git-ignored, keeps
 # the last 30); DEBUG_TTS_CHECK also transcribes each clip afterwards to flag
@@ -153,29 +163,38 @@ SLEEP_PHRASES = [        # any of these puts him to sleep until the next "hey <n
 ]
 # What he says as he goes to sleep: personality.py, LINES.
 
-# Emotions the firmware knows how to display (see firmware/src/face.cpp).
-EMOTIONS = [
-    "neutral",
-    "happy",
-    "sad",
-    "angry",
-    "surprised",
-    "sleepy",
-    "thinking",
-]
+# Emotions the firmware knows how to display (firmware/src/face.cpp; their look comes from the face pack,
+# server/faces/). The model picks one per reply from this list.
+from .faces import EMOTIONS  # noqa: E402
 
-# Camera. The robot streams small JPEGs while connected; the live view
+# Camera. The robot streams JPEGs while connected; the live view
 # is at http://localhost:<LIVE_VIEW_PORT>/ on this computer.
 CAMERA_FPS = 10
+CAMERA_STREAM_SIZE = "vga"   # "vga" 640x480 (sharper tracking and perception, ~170 KB/s of WiFi) or "qvga" 320x240
 LIVE_VIEW_PORT = 8767   # the brain's own page + API. The launcher (server/launcher.py) serves the dashboard on 8766
                         # and passes these through; without the launcher, open this port directly
 LIVE_VIEW_BIND = "127.0.0.1"  # this computer only. "0.0.0.0" would show the camera to the whole LAN.
-SEND_CAMERA_TO_BRAIN = True  # let Rocky see the camera when a question is about seeing
-# A frame is attached only when the question is about seeing (any of these
-# words or phrases). Everyday words like "this", "that", "here", "there" and
-# "right" are deliberately NOT in the list: they made him describe the room
-# in answers that had nothing to do with it. He can always use his `look`
-# ability to get a fresh picture on his own.
+SEND_CAMERA_TO_BRAIN = True  # let Rocky see the camera at all (False = no picture ever goes to the model)
+# Seeing better (dashboard: Settings > Vision).
+#   VISION_EVERY_QUESTION  attach the camera's picture to every question while he's awake, not only ones about
+#                          seeing, so he knows what you're doing (a small picture costs ~100 tokens, a sharp one
+#                          ~1,000, about $0.0001 on Haiku 5.5; the picture goes to the model provider either way)
+#   SNAPSHOT_SIZE          the sharp still for questions about seeing and for `look` (taken the moment you stop
+#                          talking, while your words are turned into text, so it costs no time): "svga" 800x600,
+#                          "xga" 1024x768, "uxga" 1600x1200, "" = stream frame. A context picture (above) is the
+#                          stream frame: a sharp one makes every answer ~0.4 s slower
+#   PERCEPTION             watch the stream with local models for people, faces, gestures and objects
+#                          (brain/perception.py) and tell him what they notice with every question
+#   GESTURE_REACTIONS      a wave wakes him; a thumbs up or down shows on his face
+VISION_EVERY_QUESTION = True
+SNAPSHOT_SIZE = "xga"
+PERCEPTION = True
+PERCEPTION_FPS = 8.0         # looks per second (hands every look; faces and objects every other)
+GESTURE_REACTIONS = True
+# A question with any of these words or phrases is about seeing: he waits for a sharp still and is told to look at
+# it. Other questions get the picture only for context (VISION_EVERY_QUESTION), or none. Everyday words like "this",
+# "that", "here", "there" and "right" are deliberately NOT in the list: they made him describe the room in answers
+# that had nothing to do with it. He can always use his `look` ability to get a fresh picture on his own.
 CAMERA_WORDS = [
     "see", "seeing", "look", "looking", "watch", "watching", "camera", "picture",
     "photo", "image", "view", "describe", "notice", "recognize", "recognise",
@@ -185,6 +204,10 @@ CAMERA_WORDS = [
     "read the", "read what",
 ]
 
+# Body language (body.py): small head moves that go with his emotion while he talks, and a thinking glance while he
+# works out a reply. Never while asleep, tracking, or while a look is taking its picture. Dashboard: Rocky card.
+BODY_LANGUAGE = True
+
 # Face tracking: the head follows the biggest face in the picture.
 # Off until you ask ("Rocky, track me"); phrases below switch it without a
 # brain call, and Rocky can also switch it himself when asked in other words.
@@ -193,35 +216,36 @@ TRACK_ON_PHRASES = ["track me", "follow me", "watch me", "keep your eyes on me",
 TRACK_OFF_PHRASES = ["stop tracking", "stop following", "stop watching", "stop looking at me"]
 # What he says when tracking starts/stops: personality.py, LINES.
 # Camera field of view in HEAD degrees (how far the head turns to move something edge to edge), along the sensor's
-# long and short sides; the tracker swaps them itself when CAMERA_ROTATE turns the picture 90 degrees.
-# Measured on the V2 head 2026-09-30 by moving the head and matching the room between frames: ~2.1 px per head
-# degree both ways in the 240x320 upright picture. (Was 62 / 48, the stock lens on paper: 2.4x too narrow, so the
-# tracker only went about 40% of the way to the face each step.)
+# long and short sides; the tracker swaps them itself when CAMERA_ROTATE turns the picture 90 degrees. Measured on
+# the V2 head by moving the head and matching the room between frames (the lens is much wider than its data sheet's
+# 62 / 48).
 TRACK_HFOV = 104.0
 TRACK_VFOV = 92.0
 # The V2 head holds the camera on its side, so the brain turns every frame upright as it arrives (before the
 # live view, face tracking and Rocky's own look at the camera use it). Degrees clockwise: 0, 90, 180 or 270.
 # The live view's Rotate button changes it until restart.
 CAMERA_ROTATE = 270
-# The picture also came out mirrored left-right (2026-09-30: panning the head right moved the room right in the
-# frame, where a true view moves it left). Mirroring it back keeps Rocky's left and right true, for face tracking
-# and for what he says he sees.
+# The picture also comes out mirrored left-right (panning the head right moved the room right in the frame, where
+# a true view moves it left). Mirroring it back keeps Rocky's left and right true, for face tracking and for what
+# he says he sees. To check a new head: `pan 15` must shift the room LEFT in the picture, `tilt 15` DOWN.
 CAMERA_MIRROR = True
 TRACK_GAIN = 0.5           # fraction of the way to the face the head is sent per frame (lower = calmer)
 TRACK_DEADBAND = 0.05      # ignore errors smaller than this fraction of half-frame (~3 deg with the wide lens)
 TRACK_PAN_SIGN = 1         # flip to -1 if the head turns AWAY from you
 TRACK_TILT_SIGN = 1        # flip to -1 if it nods the wrong way
-TRACK_PAN_LIMIT = 110.0    # must match PAN_MIN/MAX_DEG in firmware config.h (38/30 gears)
-TRACK_TILT_MIN = -85.0     # must match TILT_MIN/MAX_DEG in firmware config.h (V2 neck, 2026-09-30)
-TRACK_TILT_MAX = 85.0      # (0 on the V1 bracket, which couldn't look above level)
-TRACK_LOST_SECONDS = 4.0   # no face this long → idle glances resume
+# The head's range, used everywhere the brain moves it (tracking, `look`, the dashboard's sliders, what the model
+# is told it can do).
+TRACK_PAN_LIMIT = 95.0     # must match PAN_MIN/MAX_DEG in firmware config.h
+TRACK_TILT_MIN = -85.0     # must match TILT_MIN/MAX_DEG in firmware config.h
+TRACK_TILT_MAX = 85.0
+TRACK_LOST_SECONDS = 4.0   # no face this long → he stops following and the head stays where it is
 # Face tracking's own tilt range, inside the head's +-85: plenty to follow a face without nodding right down.
 TRACK_FOLLOW_TILT = (-30.0, 60.0)
 # A frame shows where the head was a moment ago (exposure, JPEG, WiFi), and the head is still moving to where it
 # was last sent. The tracker keeps a copy of the firmware's motion (speed + acceleration limits, firmware config.h)
 # to know where the head pointed when each frame was taken, so it aims at where the face really is instead of
 # piling fresh moves on top of ones the camera hasn't seen yet (that overshoots and oscillates).
-TRACK_LATENCY_S = 0.3      # camera → brain delay plus servo lag, seconds (measured 0.18-0.38, 2026-09-30)
+TRACK_LATENCY_S = 0.3      # camera → brain delay plus servo lag, seconds (measured 0.18-0.38)
 TRACK_PAN_SPEED, TRACK_PAN_ACCEL = 150.0, 450.0     # = PAN_MAX_SPEED, PAN_ACCEL
 TRACK_TILT_SPEED, TRACK_TILT_ACCEL = 160.0, 600.0   # = TILT_MAX_SPEED, TILT_ACCEL
 

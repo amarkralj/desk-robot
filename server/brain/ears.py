@@ -270,8 +270,11 @@ class Ears:
         on_utterance: Callable[[str, float, float], None],
         on_speech_start: Callable[[], None] | None = None,
         device: int | str | None = config.MIC_DEVICE,
+        on_turn_end: Callable[[], None] | None = None,
     ) -> None:
         self.on_utterance = on_utterance
+        self.on_turn_end = on_turn_end      # the moment a turn ends, before it's transcribed
+        self.transcribing = False           # a turn is being turned into text right now
         self.device = device
         self.device_name = "?"
         self.mac_error: str | None = None  # why the Mac mic could not be opened, if it couldn't
@@ -372,6 +375,8 @@ class Ears:
             utterance = segmenter.push(block)
             if utterance is None:
                 continue
+            if self.on_turn_end is not None:
+                self.on_turn_end()
             # Bring quiet speech up to a healthy level for the model.
             peak = float(np.abs(utterance).max())
             if peak > 0.001:
@@ -379,7 +384,11 @@ class Ears:
             if config.DEBUG_SAVE_UTTERANCE:
                 _save_wav(utterance, config.DEBUG_SAVE_UTTERANCE)
             t0 = time.time()
-            text = self.transcriber.transcribe(utterance)
+            self.transcribing = True
+            try:
+                text = self.transcriber.transcribe(utterance)
+            finally:
+                self.transcribing = False
             print(f"  (turn: {segmenter.last_decision}; transcribed in {time.time() - t0:.2f}s)")
             if text:
                 self.on_utterance(text, segmenter.started_at, segmenter.ended_at)

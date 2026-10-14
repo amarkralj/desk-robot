@@ -1,6 +1,7 @@
 #include "servo_neck.h"
 
 #include <driver/mcpwm.h>
+#include <soc/mcpwm_struct.h>
 
 void ServoNeck::begin(uint8_t pin, float minDeg, float maxDeg,
                       float maxSpeedDegPerSec, float accelDegPerSec2, uint32_t relaxAfterMs,
@@ -21,31 +22,87 @@ void ServoNeck::begin(uint8_t pin, float minDeg, float maxDeg,
   targetDeg_ = 0;
   lastUpdateMs_ = millis();
   nextGlanceMs_ = millis() + 5000;
-  attachIfNeeded();
-  writeAngle(0);
+  // Claim the PWM output once. The library starts it straight away, before any angle is set (and claiming the
+  // second servo restarts the timer the two share, zeroing the first one's pulse width), so take the pin back at
+  // once: quiet until hold() or the first move starts the pulses properly. Both servos are begun before either
+  // moves.
+  servo_.setPeriodHertz(50);
+  // 500-2400us covers the full travel of SG90/MG90S-class servos. On the S3
+  // the library returns 100 + unit*10 + timer*2 + operator for an MCPWM output.
+  int ch = servo_.attach(pin_, 500, 2400);
+  mcpwmCode_ = ch >= 100 ? ch - 100 : 999;
+  attached_ = true;
+  relax(true);
+}
+
+// The MCPWM registers must be read as whole 32-bit words: read through the struct's 16-bit fields, the compiler may
+// load just 16 bits, and the peripheral then answers 0.
+static uint32_t timerCount(const mcpwm_dev_t& dev, int t) { return dev.timer[t].timer_status.val & 0xFFFF; }
+static uint32_t timerPeriod(const mcpwm_dev_t& dev, int t) { return (dev.timer[t].timer_cfg0.val >> 8) & 0xFFFF; }
+
+// This servo's MCPWM timer goes 0..period every 20 ms and the pulse is high from 0 to its width (at most 2.4 ms, 12%
+// of the period). Wait until the count is well past the pulse and well before the next one. afterPeriodStart: let a
+// period start go by first, so a pulse width just written (the hardware takes it at the period start) is in force.
+void ServoNeck::waitForGap(bool afterPeriodStart) {
+  if (mcpwmCode_ >= 100) return;   // LEDC: not used on the S3
+  mcpwm_dev_t& dev = mcpwmCode_ / 10 ? MCPWM1 : MCPWM0;
+  int t = (mcpwmCode_ % 10) / 2;
+  uint32_t period = timerPeriod(dev, t);
+  if (period == 0) return;
+  uint32_t lo = period * 15 / 100, hi = period * 85 / 100;
+  uint32_t last = timerCount(dev, t);
+  bool started = !afterPeriodStart;
+  for (uint32_t t0 = micros(); micros() - t0 < 45000;) {   // two periods at most
+    uint32_t c = timerCount(dev, t);
+    if (c < last) started = true;
+    last = c;
+    if (started && c > lo && c < hi) return;
+  }
+}
+
+uint32_t ServoNeck::pwmPeriodTicks() const {
+  if (mcpwmCode_ >= 100) return 0;
+  mcpwm_dev_t& dev = mcpwmCode_ / 10 ? MCPWM1 : MCPWM0;
+  return timerPeriod(dev, (mcpwmCode_ % 10) / 2);
+}
+
+int ServoNeck::gapCheck(bool afterPeriodStart) {
+  uint32_t period = pwmPeriodTicks();
+  if (period == 0) return -1;
+  waitForGap(afterPeriodStart);
+  mcpwm_dev_t& dev = mcpwmCode_ / 10 ? MCPWM1 : MCPWM0;
+  return static_cast<int>(timerCount(dev, (mcpwmCode_ % 10) / 2) * 1000 / period);
 }
 
 void ServoNeck::attachIfNeeded() {
   if (attached_) return;
-  if (mcpwmCode_ < 0) {
-    servo_.setPeriodHertz(50);
-    // 500-2400us covers the full travel of SG90/MG90S-class servos. On the S3
-    // the library returns 100 + unit*10 + timer*2 + operator for an MCPWM output.
-    int ch = servo_.attach(pin_, 500, 2400);
-    mcpwmCode_ = ch >= 100 ? ch - 100 : 999;
-  } else if (mcpwmCode_ < 100) {
-    // Route our MCPWM output back to the pin. Don't detach/re-attach through the
-    // library: on the S3 it hands out operators by count, so a servo that
-    // re-attaches while the other is still running can land on the other's
-    // operator, and then both servos get the same pulses.
-    int unit = mcpwmCode_ / 10, timer = (mcpwmCode_ % 10) / 2, op = mcpwmCode_ % 2;
-    (void)timer;
+  if (mcpwmCode_ < 100) {
+    // Route our MCPWM output back to the pin: the pulse width first, then the pin, between two pulses. (Not a
+    // detach/re-attach through the library: on the S3 it hands out operators by count, so a servo that re-attaches
+    // while the other is still running can land on the other's operator, and then both get the same pulses.)
+    writeAngle(currentDeg_);
+    waitForGap(true);
+    int unit = mcpwmCode_ / 10, op = mcpwmCode_ % 2;
     mcpwm_io_signals_t sig = unit == 0 ? (op == 0 ? MCPWM0A : MCPWM0B) : (op == 0 ? MCPWM1A : MCPWM1B);
     mcpwm_gpio_init(static_cast<mcpwm_unit_t>(unit), sig, pin_);
   } else {
     servo_.attach(pin_, 500, 2400);  // LEDC output (not expected on the S3)
+    writeAngle(currentDeg_);
   }
   attached_ = true;
+}
+
+void ServoNeck::relax(bool now) {
+  if (!attached_) return;
+  // Take the pin off the PWM and hold it low: no pulses, so the servo goes quiet (the library's detach() leaves
+  // MCPWM driving the pin on the S3). Between two pulses, unless `now` (at begin, before any angle was set).
+  if (!now) waitForGap(false);
+  digitalWrite(pin_, LOW);   // the level the pin takes the moment it leaves the PWM
+  pinMode(pin_, OUTPUT);
+  digitalWrite(pin_, LOW);
+  if (mcpwmCode_ >= 100) servo_.detach();
+  attached_ = false;
+  relaxedSinceMs_ = millis();
 }
 
 void ServoNeck::writeAngle(float deg) {
@@ -58,7 +115,8 @@ void ServoNeck::writeAngle(float deg) {
 }
 
 void ServoNeck::setRaw(float deg) {
-  deg = constrain(deg, -60.0f, 60.0f);
+  float reach = 90.0f * gearRatio_;   // the servo's whole travel, in head degrees
+  deg = constrain(deg, -reach, reach);
   attachIfNeeded();
   currentDeg_ = targetDeg_ = deg;
   velocity_ = 0;
@@ -115,17 +173,15 @@ void ServoNeck::update(uint32_t nowMs) {
     attachIfNeeded();
     writeAngle(currentDeg_);
     settledSinceMs_ = 0;
-  } else if (attached_ && relaxAfterMs_ > 0 && (relaxWithin_ < 0 || fabsf(currentDeg_) <= relaxWithin_)) {
+  } else if (attached_ && relaxAfterMs_ > 0 && currentDeg_ >= relaxLo_ && currentDeg_ <= relaxHi_) {
     if (settledSinceMs_ == 0) {
       settledSinceMs_ = nowMs;
     } else if (nowMs - settledSinceMs_ >= relaxAfterMs_) {
-      // At rest long enough: stop driving the servo so it doesn't buzz.
-      // Take the pin off the PWM and hold it low: no pulses, so the servo goes
-      // quiet (the library's detach() leaves MCPWM driving the pin on the S3).
-      attached_ = false;
-      if (mcpwmCode_ >= 100) servo_.detach();
-      pinMode(pin_, OUTPUT);
-      digitalWrite(pin_, LOW);
+      relax();   // at rest long enough: stop driving the servo so it doesn't buzz
     }
+  } else if (!attached_ && refreshMs_ > 0 && nowMs - relaxedSinceMs_ >= refreshMs_) {
+    // Quiet a while: drive it briefly at its angle, which puts back a head that slipped and is silent otherwise.
+    attachIfNeeded();
+    settledSinceMs_ = nowMs - relaxAfterMs_ + refreshBurstMs_;   // relax again after the burst
   }
 }

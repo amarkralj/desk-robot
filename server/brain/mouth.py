@@ -10,9 +10,8 @@ Two voices:
     PowerShell, espeak-ng on Linux.
 
 `stream(text)` yields 16 kHz mono s16le PCM chunks — the exact format the
-robot's speaker expects (docs/protocol.md) — as they're produced.
-`synthesize()` is the same joined into one buffer; `play()` plays a buffer
-on this computer.
+robot's speaker expects (docs/protocol.md) — as they're produced. `play()`
+plays a buffer on this computer.
 """
 
 from __future__ import annotations
@@ -181,11 +180,12 @@ class Leveler:
     RELEASE = 0.1       # per chunk: quieter than expected → follow slowly
     SQUEEZE = 0.35      # how far each chunk is pulled toward the running level
                         # (0 = only sentence-scale leveling, 1 = flatten every chunk)
-    CEILING = 0.95      # never let a chunk's peak exceed this: the chunk is turned down, not bent
+    # never let a chunk's peak exceed config.TTS_PEAK: the chunk is turned down, not bent
 
     def __init__(self) -> None:
         # Read once per reply, so the console's sliders apply from the next one.
         self.level = config.TTS_LEVEL
+        self.ceiling = config.TTS_PEAK
         self.eq = Equalizer(config.TTS_HIGHPASS_HZ, config.TTS_PRESENCE_DB)
         self.env = 0.0      # loudness estimate; 0 = nothing heard yet
         self.gain = 1.0
@@ -211,16 +211,16 @@ class Leveler:
         else:
             target = self.gain  # a gap: hold the gain where it is
         # Peak limiting the way the original build did it (2026-09-06): cap the
-        # chunk's gain so its peak stays under CEILING. The waveform is never
+        # chunk's gain so its peak stays under the ceiling. The waveform is never
         # bent, so loud syllables get quieter rather than harsher.
         peak = float(np.abs(x).max())
         if peak > 0:
-            target = min(target, self.CEILING / peak)
+            target = min(target, self.ceiling / peak)
         y = x * np.linspace(self.gain, target, len(x), dtype=np.float32)
         self.gain = target
         top = float(np.abs(y).max())
-        if top > self.CEILING:  # the ramp started above the cap: trim the whole chunk
-            y *= self.CEILING / top
+        if top > self.ceiling:  # the ramp started above the cap: trim the whole chunk
+            y *= self.ceiling / top
         return (y * 32767).astype(np.int16).tobytes()
 
 
@@ -331,11 +331,6 @@ def stream(text: str, leveler: Leveler | None = None) -> Iterator[bytes]:
             _save_clip(b"".join(parts), text)
 
 
-def synthesize(text: str) -> bytes:
-    """Rocky's reply as one 16 kHz mono signed 16-bit little-endian PCM buffer."""
-    return b"".join(stream(text))
-
-
 def _save_clip(pcm: bytes, text: str) -> None:
     """Keep recent clips on disk so a weird one can be inspected."""
     try:
@@ -355,16 +350,6 @@ def _save_clip(pcm: bytes, text: str) -> None:
                 except OSError: pass
     except OSError:
         pass
-
-
-def normalize(pcm: bytes, peak: float = 0.95) -> bytes:
-    """Scale so the loudest sample hits `peak` of full scale. Used for the
-    built-in fallback voice, which arrives all at once."""
-    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-    top = float(np.abs(samples).max()) if len(samples) else 0.0
-    if top < 1:
-        return pcm
-    return np.clip(samples * (peak * 32767 / top), -32768, 32767).astype(np.int16).tobytes()
 
 
 def play(pcm: bytes) -> None:
@@ -391,10 +376,3 @@ def play(pcm: bytes) -> None:
         subprocess.run(["afplay", path], check=False, timeout=60)
     finally:
         os.unlink(path)
-
-
-def speak(text: str) -> bytes:
-    """Synthesize and play on this computer; returns the PCM for the robot too."""
-    pcm = synthesize(text)
-    play(pcm)
-    return pcm

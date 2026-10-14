@@ -1,7 +1,7 @@
 """Tracker: find a face in each camera frame and steer the head toward it.
 
 Runs in its own thread (OpenCV is blocking). For every new frame from Eyes
-it detects faces (YuNet, ~3 ms at 320x240), picks the biggest, works out how
+it detects faces (YuNet, ~6 ms at 640x480), picks the biggest, works out how
 far off-center it is, and nudges the pan/tilt estimate toward it. The
 proposed head pose goes into an outbox; main.py sends it to the robot.
 
@@ -68,6 +68,19 @@ class Motion:
                     self.pos += step
             self.hist.append((self.t, self.pos))
 
+    def arrival_in(self, now: float) -> float:
+        """Seconds until the head stops at its target (0 if it's there already)."""
+        self.advance(now)
+        pos, vel, t, hist = self.pos, self.vel, self.t, self.hist
+        self.hist = deque(maxlen=1)              # simulate on a copy of the state, then put it back
+        steps = 0
+        while (self.pos != self.target or self.vel) and steps < 250:
+            steps += 1
+            self.advance(self.t + self.DT)
+        left = max(0.0, self.t - now)
+        self.pos, self.vel, self.t, self.hist = pos, vel, t, hist
+        return left
+
     def at(self, when: float) -> float:
         """Where the head was at time `when` (the oldest we remember if it's further back)."""
         self.advance(when)
@@ -98,6 +111,11 @@ class Tracker:
 
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True).start()
+
+    def arrival_in(self) -> float:
+        """Seconds until the head finishes its current move, on both axes."""
+        now = time.time()
+        return max(m.arrival_in(now) for m in self.motion.values())
 
     # Called from main.py when it moves the head itself, so we stay in sync.
     def note_pose(self, pan: float | None = None, tilt: float | None = None) -> None:
@@ -140,7 +158,7 @@ class Tracker:
                 self._lost_reported = False
                 self._steer(face, w, h, now, seen_at)
             elif self.tracking and now - self.last_seen > config.TRACK_LOST_SECONDS:
-                # Lost them: hand the head back to its idle glances.
+                # Lost them: stop following; the head stays where it is.
                 self.tracking = False
                 if not self._lost_reported:
                     self._lost_reported = True
@@ -180,6 +198,11 @@ class Tracker:
 
     def _annotate(self, img, face, w: int, h: int) -> bytes:
         cv2.drawMarker(img, (w // 2, h // 2), (90, 90, 90), cv2.MARKER_CROSS, 12, 1)
+        p = getattr(self, "perception", None)
+        if p is not None and p.enabled:
+            for label, x, y, bw, bh in list(p.boxes):   # what perception notices: amber boxes, named
+                cv2.rectangle(img, (x, y), (x + bw, y + bh), (92, 180, 242), 1)
+                cv2.putText(img, label, (x + 2, max(9, y + 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (92, 180, 242), 1)
         if face is not None:
             x, y, fw, fh = face
             cv2.rectangle(img, (x, y), (x + fw, y + fh), (80, 220, 120), 2)

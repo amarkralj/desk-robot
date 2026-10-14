@@ -3,6 +3,7 @@
 // type `help`) and, when include/secrets.h exists, over WiFi by the brain.
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <U8g2lib.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -23,8 +24,8 @@
 #define HAVE_BRAIN 0
 #endif
 
-// 1.3" SH1106 128x64 OLED over hardware I2C (SDA=D4/GPIO5, SCL=D5/GPIO6).
-// OLED_FLIP (config.h) picks R2 = rotated 180 degrees for an upside-down mount.
+// The 128x64 OLED over hardware I2C (SDA=D4/GPIO5, SCL=D5/GPIO6): the V2 head's 2.42" SSD1309, or V1's 1.3"
+// SH1106 (OLED_SSD1309_242 in config.h). OLED_FLIP picks R2 = rotated 180 degrees for an upside-down mount.
 #if OLED_SSD1309_242
 U8G2_SSD1309_128X64_NONAME0_F_HW_I2C u8g2(OLED_FLIP ? U8G2_R2 : U8G2_R0, U8X8_PIN_NONE);
 #else
@@ -48,6 +49,10 @@ Mic mic;
 Camera camera;
 uint32_t nextTempMs = 0;
 volatile bool speakDonePending = false;  // set by the speaker task, sent from loop()
+uint32_t slowestLoopMs = 0;              // longest pass of loop() during the last reply (reported with it)
+// While he talks the camera stream is thinned to this, so sending pictures doesn't crowd out his voice arriving
+// over the same WiFi link (and the face keeps animating).
+constexpr uint32_t TALKING_FRAME_MS = 250;
 // Talking mouth while the voice plays on the computer instead of our speaker: the brain sends `mouth <level>`
 // (the voice's loudness) ~25 times a second, and -1 when it's done. Stale after MOUTH_TIMEOUT_MS.
 float brainMouthLevel = -1.0f;
@@ -96,13 +101,14 @@ void drawAssemblyScreen() {
 
 void printHelp() {
   Serial.println(F("desk-robot commands:"));
-  Serial.println(F("  emo <name>   neutral|happy|sad|angry|surprised|sleepy|thinking"));
-  Serial.println(F("  pan <deg>    turn head, -110 (left)..110 (right), 0 = center"));
+  Serial.println(F("  emo <name>   neutral|happy|sad|angry|surprised|sleepy|thinking|curious|skeptical|excited|love|confused"));
+  Serial.println(F("  face         face pack in use | face still <emotion> | face live | face pack <json>"));
+  Serial.println(F("  pan <deg>    turn head, -95 (left)..95 (right), 0 = center"));
   Serial.println(F("  tilt <deg>   nod head, -85 (down)..85 (up), 0 = level"));
   Serial.println(F("  center       head to center on both axes"));
   Serial.println(F("  assembly on|off  hold both servos at centre for fitting gears/horns (or BOOT within 5 s of power-up)"));
   Serial.println(F("  motion pan|tilt <speed> <accel>  tune head motion live (deg/s, deg/s^2)"));
-  Serial.println(F("  raw pan|tilt <deg>  calibration move that ignores the limits (watch it!)"));
+  Serial.println(F("  raw pan|tilt <deg>  calibration move to any head angle the servo can reach, ignoring the limits (watch it!)"));
   Serial.println(F("  blink        blink now"));
   Serial.println(F("  sleep on|off eyes shut, breathing, Z's"));
   Serial.println(F("  demo on|off  wake up and cycle through the faces on his own"));
@@ -116,8 +122,10 @@ void printHelp() {
   Serial.println(F("  oled off|on | oled <cmd> [arg]  screen power, or a raw SSD1309 command in hex (whine hunting)"));
   Serial.println(F("  mic on|off   stream the microphone to the brain"));
   Serial.println(F("  miclevel     print mic level for 3 s (talk to it)"));
-  Serial.println(F("  stream on|off [fps]  stream camera JPEGs to the brain"));
+  Serial.println(F("  stream on|off [fps] [qvga|vga]  stream camera JPEGs to the brain"));
   Serial.println(F("  snap         grab one frame and report its size"));
+  Serial.println(F("  snapshot xga one sharp still (vga svga xga sxga uxga) for the brain"));
+  Serial.println(F("  servo        check the servo PWM timing"));
   Serial.println(F("  temp         chip temperature"));
   Serial.println(F("  help         this text"));
 }
@@ -140,7 +148,34 @@ void handleCommand(String line) {
       face.setEmotion(e);
       Serial.printf("emotion: %s\n", emotionName(e));
     } else {
-      Serial.println(F("unknown emotion — try: neutral happy sad angry surprised sleepy thinking"));
+      Serial.print(F("unknown emotion — try:"));
+      for (int i = 0; i < static_cast<int>(Emotion::COUNT); ++i) Serial.printf(" %s", emotionName(static_cast<Emotion>(i)));
+      Serial.println();
+    }
+  } else if (cmd == "face") {
+    // face | face still <emotion> | face live | face pack <json>
+    if (arg.startsWith("still")) {
+      Emotion e = Emotion::Neutral;
+      String name = arg.substring(5);
+      name.trim();
+      if (name.length() && !emotionFromName(name.c_str(), e)) {
+        Serial.println(F("face still <emotion>"));
+        return;
+      }
+      if (screen != Screen::Face) {
+        screen = Screen::Face;
+        home.restoreDisplay();
+      }
+      face.setStill(true, e);
+      Serial.printf("face: still %s\n", emotionName(e));
+    } else if (arg == "live") {
+      face.setStill(false);
+      Serial.println(F("face: live"));
+    } else if (arg.startsWith("pack ")) {
+      bool ok = face.applyPackJson(arg.substring(5).c_str());
+      Serial.printf("face: %s\n", ok ? face.packName() : "that pack doesn't parse");
+    } else {
+      Serial.printf("face: pack \"%s\", emotion %s\n", face.packName(), emotionName(face.emotion()));
     }
   } else if (assemblyMode && (cmd == "pan" || cmd == "tilt")) {
     Serial.println(F("assembly mode: head held at centre (`assembly off` to leave)"));
@@ -160,7 +195,7 @@ void handleCommand(String line) {
     if (axis == "tilt") tiltNeck.setRaw(deg);
     else if (axis == "pan") panNeck.setRaw(deg);
     else { Serial.println(F("usage: raw pan|tilt <deg>")); return; }
-    Serial.printf("raw %s -> %.0f deg (limits ignored)\n", axis.c_str(), deg);
+    Serial.printf("raw %s -> %.0f deg (limits ignored)\n", axis.c_str(), (axis == "tilt" ? tiltNeck : panNeck).current());
   } else if (cmd == "center") {
     panNeck.setTarget(0);
     tiltNeck.setTarget(0);
@@ -220,6 +255,7 @@ void handleCommand(String line) {
     }
   } else if (cmd == "speak_begin") {
     speaker.beginSpeech(static_cast<size_t>(arg.toInt()));
+    slowestLoopMs = 0;
   } else if (cmd == "speak_end") {
     speaker.endSpeech();
   } else if (cmd == "mouth") {
@@ -248,11 +284,19 @@ void handleCommand(String line) {
       Serial.printf("  level %.3f %.*s\n", mic.level(), min(bars, 40), "########################################");
     }
   } else if (cmd == "stream") {
+    // stream on|off [fps] [qvga|vga]
     int sp = arg.indexOf(' ');
     String onoff = sp < 0 ? arg : arg.substring(0, sp);
-    float fps = sp < 0 ? 10.0f : arg.substring(sp + 1).toFloat();
+    String rest = sp < 0 ? String() : arg.substring(sp + 1);
+    int sp2 = rest.indexOf(' ');
+    float fps = rest.length() ? (sp2 < 0 ? rest : rest.substring(0, sp2)).toFloat() : 10.0f;
+    if (sp2 >= 0) camera.setStreamSize(rest.substring(sp2 + 1).c_str());
     camera.setStreaming(onoff == "on", fps);
-    Serial.printf("stream %s @ %.1f fps\n", camera.streaming() ? "on" : "off", fps);
+    Serial.printf("stream %s @ %.1f fps, %s\n", camera.streaming() ? "on" : "off", fps, camera.streamSize());
+  } else if (cmd == "snapshot") {
+    // snapshot <vga|svga|xga|sxga|uxga>: one sharp still; sent to the brain when ready (and reported here)
+    bool ok = camera.requestSnapshot(arg.length() ? arg.c_str() : "xga");
+    if (!ok) Serial.println(F("snapshot <vga|svga|xga|sxga|uxga> (camera must be running)"));
   } else if (cmd == "snap") {
     if (!camera.ok()) {
       Serial.println(F("camera not available"));
@@ -279,6 +323,19 @@ void handleCommand(String line) {
     }
     Serial.printf("motion pan %.0f deg/s %.0f deg/s^2 | tilt %.0f deg/s %.0f deg/s^2\n",
                   panNeck.maxSpeed(), panNeck.accel(), tiltNeck.maxSpeed(), tiltNeck.accel());
+  } else if (cmd == "servo") {
+    // PWM check: each servo's timer, and where in the period a start/stop would happen (must be 150-850)
+    for (ServoNeck* n : {&panNeck, &tiltNeck}) {
+      int worst = 1000, best = 0;
+      for (int i = 0; i < 20; ++i) {
+        int p = n->gapCheck(i % 2);
+        worst = min(worst, p);
+        best = max(best, p);
+      }
+      Serial.printf("servo %s: period %u ticks, %s, switch points %d..%d of 1000 (pulse ends by 120)\n",
+                    n == &panNeck ? "pan" : "tilt", static_cast<unsigned>(n->pwmPeriodTicks()),
+                    n->powered() ? "powered" : "quiet", worst, best);
+    }
   } else if (cmd == "temp") {
     Serial.printf("chip %.1f C\n", temperatureRead());
   } else if (cmd == "glance") {
@@ -294,7 +351,32 @@ void handleCommand(String line) {
   }
 }
 
+// Servo signal lines held low from the first moment, before anything else runs. Until a servo is started its line
+// would otherwise float (nothing drives it) for about a second: the camera starts first, then pan, then tilt. A
+// powered servo reads the noise on a floating line, and the pan's pulses on the wire beside it, as commands and
+// jumps (the head snapping to look straight up at power-up). Low = no pulses = the servo stays where it is.
+static void quietServoLines() {
+  for (uint8_t pin : {PIN_SERVO_PAN, PIN_SERVO_TILT}) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+  }
+}
+// A constructor runs before setup(), a few ms after the bootloader hands over.
+static struct QuietServosAtStart { QuietServosAtStart() { quietServoLines(); } } quietServosAtStart;
+
+static const char* resetReason() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (the supply dipped: servos + camera on a weak USB port?)";
+    case ESP_RST_PANIC: return "crash";
+    case ESP_RST_INT_WDT: case ESP_RST_TASK_WDT: case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_SW: return "restart";
+    default: return "other";
+  }
+}
+
 void setup() {
+  quietServoLines();   // again, in case the core touched the pins since
   Serial.begin(115200);
   randomSeed(esp_random());
 
@@ -307,15 +389,20 @@ void setup() {
   face.begin();
   // Camera first: the servos jump to home when they start, and that current
   // surge on USB power can brown out the camera's probe.
-  if (camera.begin()) Serial.println(F("camera: ready"));
+  if (camera.begin()) Serial.printf("camera: ready (%s)\n", camera.model());
+  // Both claim their PWM output first (no pulses yet: claiming the second disturbs the first), then each goes to
+  // home in turn, one servo surge at a time.
   panNeck.begin(PIN_SERVO_PAN, PAN_MIN_DEG, PAN_MAX_DEG, PAN_MAX_SPEED, PAN_ACCEL,
                 SERVO_RELAX_MS, PAN_TRIM_DEG, /*glanceRange=*/25.0f,
                 PAN_INVERT, PAN_GEAR_RATIO);
-  delay(300);  // one servo surge at a time
   tiltNeck.begin(PIN_SERVO_TILT, TILT_MIN_DEG, TILT_MAX_DEG, TILT_MAX_SPEED, TILT_ACCEL,
                  TILT_RELAX_MS, TILT_TRIM_DEG, /*glanceRange=*/10.0f,
                  TILT_INVERT);
-  tiltNeck.setRelaxWithin(TILT_RELAX_WITHIN_DEG);
+  tiltNeck.setRelaxRange(TILT_RELAX_MIN_DEG, TILT_RELAX_MAX_DEG);
+  tiltNeck.setRefresh(TILT_REFRESH_MS, TILT_REFRESH_BURST_MS);
+  panNeck.hold();
+  delay(300);
+  tiltNeck.hold();
 
   speaker.begin(PIN_I2S_BCLK, PIN_I2S_LRC, PIN_I2S_DIN, SPEAKER_VOLUME,
                 []() { speakDonePending = true; });
@@ -329,12 +416,22 @@ void setup() {
   applyGlances();  // off: no brain yet
   nextDemoEmotionMs = millis() + 8000;
 
-  Serial.println(F("\ndesk-robot v0.3.0 — hello!"));
+  Serial.println(F("\ndesk-robot v" FW_VERSION " — hello!"));
+  Serial.printf("boot: %s\n", resetReason());
   printHelp();
 
 #if HAVE_BRAIN
   brainLink.onAudio([](const uint8_t* pcm, size_t len) { speaker.feed(pcm, len); });
   brainLink.onSettings([](const char* json) { handleCommand(String("settings ") + json); });
+  brainLink.onFace([](const char* json) {
+    // {"type":"face","save":true,"pack":{...}}: save = false while the dashboard previews an edit
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) return;
+    String pack;
+    serializeJson(doc["pack"], pack);
+    bool ok = face.applyPackJson(pack.c_str(), doc["save"] | true);
+    Serial.printf("face: %s%s\n", ok ? face.packName() : "bad pack from the brain", (doc["save"] | true) ? "" : " (preview)");
+  });
 #ifndef ROBOT_TOKEN
 #define ROBOT_TOKEN ""
 #endif
@@ -361,32 +458,49 @@ void loop() {
     if (c == '\n' || c == '\r') {
       if (!lineBuf.isEmpty()) handleCommand(lineBuf);
       lineBuf = "";
-    } else if (lineBuf.length() < 512) {     // long enough for a `settings {...}` line
+    } else if (lineBuf.length() < 4096) {    // long enough for a `settings {...}` or `face pack {...}` line
       lineBuf += c;
     }
   }
 
   uint32_t now = millis();
+  {
+    static uint32_t lastPassMs = now;
+    if (speaker.speaking() && now - lastPassMs > slowestLoopMs) slowestLoopMs = now - lastPassMs;
+    lastPassMs = now;
+  }
 
 #if HAVE_BRAIN
   brainLink.update(now);
   if (speakDonePending) {
     speakDonePending = false;
     brainLink.sendJson("{\"type\":\"speak_done\"}");
-    Serial.printf("speech: %u underruns, prebuffered %u bytes in %u ms, wifi %d dBm\n",
-                  speaker.lastUnderruns(), speaker.lastPrebuffered(),
-                  speaker.lastPrebufferMs(), WiFi.RSSI());
+    Serial.printf("speech: %u underruns, prebuffered %u bytes in %u ms, slowest loop %u ms, wifi %d dBm\n",
+                  speaker.lastUnderruns(), speaker.lastPrebuffered(), speaker.lastPrebufferMs(),
+                  static_cast<unsigned>(slowestLoopMs), WiFi.RSSI());
   }
   {
+    // The microphone. Not while he talks: the brain doesn't listen then (he'd hear himself), and those 33 small
+    // messages a second would only compete with his voice for the WiFi link.
     static uint8_t frame[Mic::FRAME_BYTES];
-    while (brainLink.connected() && mic.nextFrame(frame)) {
-      brainLink.sendBinary(0x01, frame, sizeof(frame));
+    bool talking = speaker.speaking();
+    while (mic.nextFrame(frame)) {
+      if (brainLink.connected() && !talking) brainLink.sendBinary(0x01, frame, sizeof(frame));
     }
   }
-  if (brainLink.connected() && camera.streaming()) {
+  if (size_t n = camera.snapshotLen()) {
+    if (brainLink.connected()) brainLink.sendBinary(0x03, camera.snapshotData(), n);
+    Serial.printf("snapshot: %u bytes in %u ms\n", static_cast<unsigned>(n), static_cast<unsigned>(camera.snapshotMs()));
+    camera.snapshotDone();
+  }
+  static uint32_t lastJpgMs = 0;
+  if (brainLink.connected() && camera.streaming() && (!speaker.speaking() || now - lastJpgMs >= TALKING_FRAME_MS)) {
     static uint8_t* jpg = static_cast<uint8_t*>(ps_malloc(64 * 1024));
     size_t n = jpg ? camera.takeFrame(jpg, 64 * 1024) : 0;
-    if (n > 0) brainLink.sendBinary(0x02, jpg, n);
+    if (n > 0) {
+      brainLink.sendBinary(0x02, jpg, n);
+      lastJpgMs = now;
+    }
   }
   if (brainLink.connected() && now >= nextTempMs) {
     nextTempMs = now + 10000;
@@ -401,8 +515,9 @@ void loop() {
   // Demo mode: wander through emotions so a fresh flash shows everything.
   if (demoMode && now >= nextDemoEmotionMs) {
     static const Emotion cycle[] = {
-        Emotion::Neutral, Emotion::Happy,     Emotion::Thinking,
-        Emotion::Neutral, Emotion::Surprised, Emotion::Sleepy,
+        Emotion::Neutral, Emotion::Happy,   Emotion::Thinking, Emotion::Curious, Emotion::Neutral,
+        Emotion::Surprised, Emotion::Excited, Emotion::Love, Emotion::Skeptical, Emotion::Confused,
+        Emotion::Sad,     Emotion::Angry,   Emotion::Sleepy,
     };
     demoEmotionIdx = (demoEmotionIdx + 1) % (sizeof(cycle) / sizeof(cycle[0]));
     face.setEmotion(cycle[demoEmotionIdx]);

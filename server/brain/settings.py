@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from . import computer
+
 PATH = Path(__file__).resolve().parent.parent / "settings.json"
 
 # Each setting: (default, kind, extra). kind: "bool", "int", "float", "str", "choice", "time"
@@ -30,6 +32,7 @@ SCHEMA: dict[str, dict[str, tuple]] = {
         "volume":        (0.7, "float", (0.0, 1.0)),
         "speaker_out":   ("robot", "choice", ("robot", "computer")),
         "camera_rotate": (270, "choice", (0, 90, 180, 270)),
+        "body_language": (True, "bool", None),           # small head moves while he talks (body.py)
     },
     "clock": {
         "hour_format":   (12, "choice", (12, 24)),
@@ -46,12 +49,31 @@ SCHEMA: dict[str, dict[str, tuple]] = {
         "show_sun":      (False, "bool", None),           # sunrise / sunset instead of the day's high / low
         "refresh_min":   (30, "int", (10, 180)),
     },
+    "vision": {
+        "every_question":   (True, "bool", None),        # a picture with every question while awake
+        "snapshot":         ("xga", "choice", ("off", "svga", "xga", "uxga")),  # sharp still when he looks
+        "perception":       (True, "bool", None),        # local detectors: people, faces, gestures, objects
+        "gestures":         (True, "bool", None),        # wave to wake, thumbs up / down
+        "stream":           ("vga", "choice", ("qvga", "vga")),   # the camera stream: 320x240 or 640x480
+        "words":            ("", "str", 1000),           # your own names for things, comma or line separated
+    },
+    "face": {
+        "pack":          ("rocky", "str", 48),           # a face pack id: server/faces/<id>.json or custom/<id>
+    },
     "screen": {
         "brightness":    (80, "int", (5, 100)),           # percent, for the clock screen and the face
         "night_mode":    ("dim", "choice", ("off", "dim", "dark")),   # clock screen at night
         "night_start":   ("23:00", "time", None),
         "night_end":     ("07:00", "time", None),
         "night_brightness": (10, "int", (1, 100)),
+    },
+    # What Rocky may do on this computer (brain/computer.py). Off until you switch it on; the choice is remembered.
+    "computer": {
+        "control":       (False, "bool", None),
+        "apps":          (computer.DEFAULT_APPS, "str", 1000),   # comma or line separated
+        "bookmarks":     ("", "str", 3000),               # "Name = https://..." per line
+        "shortcuts":     ("", "str", 1000),               # Apple Shortcuts he may run, comma or line separated
+        "confirm_shortcuts": (True, "bool", None),        # ask "Run X?" and wait for a yes first
     },
     # Listening and voice tuning (the dashboard's Advanced section); None = the default in config.py
     "listening": {
@@ -110,6 +132,10 @@ def clean_value(section: str, key: str, value):
             raise ValueError(f"{key} must be at most {extra} characters")
         if section == "clock" and key == "timezone" and value and posix_tz(value) is None:
             raise ValueError(f"unknown time zone: {value}")
+        if section == "face" and key == "pack" and not re.match(r"^(custom/)?[a-z0-9][a-z0-9-]{0,39}$", value):
+            raise ValueError("a face pack id is lowercase letters, digits and dashes")
+        if section == "computer" and key == "bookmarks":
+            computer.parse_bookmarks(value)   # raises ValueError naming the bad line
         return value
     raise ValueError(f"{key}: unknown kind {kind}")
 

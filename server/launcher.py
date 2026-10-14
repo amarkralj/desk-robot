@@ -31,7 +31,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from brain import config, settings  # noqa: E402  (both are standard-library only)
+from brain import config, faces, settings  # noqa: E402  (all standard-library only)
 
 PORT = int(os.environ.get("ROCKY_DASHBOARD_PORT", "8766"))
 BIND = "127.0.0.1"
@@ -176,6 +176,33 @@ def schema_meta() -> dict:
     return out
 
 
+def spotify_key_set() -> bool:
+    """Whether server/.env has a Spotify key (read fresh, so the page notices one added while this runs)."""
+    found = {}
+    try:
+        for line in config._ENV_FILE.read_text().splitlines():
+            k, sep, v = line.partition("=")
+            if sep and k.strip() in ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"):
+                found[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return bool(found.get("SPOTIFY_CLIENT_ID") and found.get("SPOTIFY_CLIENT_SECRET"))
+
+
+def reload_brain() -> bool:
+    """Tell a running brain the settings or the face pack changed. True if it took them."""
+    if not (brain.running() or brain.external()):
+        return False
+    try:
+        c, r = brain_request("POST", "/api/settings_reload", b"{}",
+                             {"X-Rocky-Console": "1", "Content-Type": "application/json"})
+        r.read()
+        c.close()
+        return r.status == 200
+    except OSError:
+        return False
+
+
 def brain_request(method: str, path: str, body: bytes | None = None, headers: dict | None = None, timeout: float = 10):
     c = http.client.HTTPConnection("127.0.0.1", BRAIN_PORT, timeout=timeout)
     h = {"Host": f"localhost:{BRAIN_PORT}", **(headers or {})}
@@ -251,12 +278,25 @@ class Handler(BaseHTTPRequestHandler):
             defaults_now = {k: getattr(config, k, None) for sec in ("listening", "voice") for k in settings.SCHEMA[sec]}
             return self._json(200, {"settings": settings.load(), "schema": schema_meta(),
                                     "computer_timezone": settings.computer_timezone(),
+                                    "spotify_key": spotify_key_set(),
                                     "config_defaults": defaults_now})
+        if url.path == "/launcher/faces":
+            return self._json(200, {"packs": faces.list_packs(), "active": settings.load()["face"]["pack"],
+                                    "emotions": faces.EMOTIONS, "fx": faces.FX})
         if url.path == "/launcher/geocode":
             try:
                 return self._json(200, {"results": settings.geocode((q.get("q") or [""])[0])})
             except OSError as e:
                 return self._json(502, {"error": f"place search failed: {e}"})
+        if url.path == "/launcher/shortcuts":
+            # the Apple Shortcuts on this Mac, so the page can offer them by name (Rocky may run only the ones picked)
+            if sys.platform != "darwin":
+                return self._json(200, {"shortcuts": [], "error": "Shortcuts are a Mac thing"})
+            try:
+                out = subprocess.run(["shortcuts", "list"], capture_output=True, text=True, timeout=10).stdout
+            except (OSError, subprocess.SubprocessError) as e:
+                return self._json(502, {"error": f"couldn't list your shortcuts: {e}"})
+            return self._json(200, {"shortcuts": [n.strip() for n in out.splitlines() if n.strip()][:200]})
         if url.path in ("/status", "/frame", "/stream"):
             return self._proxy_get(url.path)
         self._json(404, {"error": "not found"})
@@ -279,17 +319,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True})
             if path == "/launcher/settings":
                 new = settings.update(self._body().get("changes", {}))
-                applied = False
-                if brain.running() or brain.external():
-                    try:
-                        c, r = brain_request("POST", "/api/settings_reload", b"{}",
-                                             {"X-Rocky-Console": "1", "Content-Type": "application/json"})
-                        r.read()
-                        c.close()
-                        applied = r.status == 200
-                    except OSError:
-                        pass
-                return self._json(200, {"ok": True, "settings": new, "applied_live": applied})
+                return self._json(200, {"ok": True, "settings": new, "applied_live": reload_brain()})
+            if path == "/launcher/faces/save":
+                body = self._body()
+                pack_id = faces.save_custom(body.get("pack"), body.get("id") or None)
+                live = settings.load()["face"]["pack"] == pack_id and reload_brain()
+                return self._json(200, {"ok": True, "id": pack_id, "applied_live": live})
+            if path == "/launcher/faces/delete":
+                pack_id = str(self._body().get("id", ""))
+                faces.delete_custom(pack_id)
+                if settings.load()["face"]["pack"] == pack_id:
+                    settings.update({"face": {"pack": faces.DEFAULT_PACK}})
+                    reload_brain()
+                return self._json(200, {"ok": True})
             if path.startswith("/api/"):
                 return self._proxy_post(path)
         except ValueError as e:
