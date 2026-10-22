@@ -33,8 +33,11 @@ Software:
 - Assembly mode (BOOT button) centres both servos for fitting the gears.
 - Body language: small head moves with his emotion while he talks, and a
   thinking glance; still while asleep, tracking, or taking a picture.
-- Computer control (off until you switch it on): he can open sites and
-  apps, play music, change the volume and run Shortcuts you allow.
+- Computer control (off until you switch it on): he can search the web
+  and open sites on any computer, and on a Mac open apps, play music,
+  change the volume and run Shortcuts you allow.
+  [docs/computer-control-windows.md](docs/computer-control-windows.md)
+  has ideas for the rest on Windows.
 - Robot link: a robot that restarts reconnects at once, the firmware joins
   the strongest access point and adapts its speaker buffer, and the
   connection token is checked more strictly.

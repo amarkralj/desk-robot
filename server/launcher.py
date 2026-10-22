@@ -324,6 +324,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"settings": settings.load(), "schema": schema_meta(),
                                     "computer_timezone": settings.computer_timezone(),
                                     "spotify_key": spotify_key_set(),
+                                    "mac": sys.platform == "darwin",   # apps, music, volume and Shortcuts are Mac only
                                     "config_defaults": defaults_now})
         if url.path == "/launcher/faces":
             return self._json(200, {"packs": faces.list_packs(), "active": settings.load()["face"]["pack"],

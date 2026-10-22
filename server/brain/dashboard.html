@@ -766,8 +766,9 @@
 
         <fieldset class="card">
           <legend class="label"><span>Computer</span><span class="saved" data-saved="computer"></span></legend>
-          <div class="set"><label class="check"><input type="checkbox" name="computer.control" aria-describedby="pchint"> Let <span data-robot-name>{name}</span> use my computer</label>
-            <p class="hint" id="pchint">He can search the web, open websites and the apps below, play or pause music, change the volume and run the Shortcuts you pick. He can't type, click, log in or buy anything. Anyone talking near him can ask too, so switch it off when that matters.</p></div>
+          <div class="set"><label class="check"><input type="checkbox" name="computer.control" aria-describedby="pchint pcplatform"> Let <span data-robot-name>{name}</span> use my computer</label>
+            <p class="hint" id="pchint">He can search the web, open websites and the apps below, play or pause music, change the volume and run the Shortcuts you pick. He can't type, click, log in or buy anything. Anyone talking near him can ask too, so switch it off when that matters.</p>
+            <p class="hint" id="pcplatform">Apps, music, volume and Shortcuts work on a Mac only. On Windows or Linux he can search the web and open websites.</p></div>
           <div class="set"><label class="k" for="pcapps">Apps he may open</label>
             <textarea id="pcapps" name="computer.apps" rows="2" maxlength="1000" spellcheck="false" aria-describedby="pcappshint"></textarea>
             <p class="hint" id="pcappshint">Names as they appear in Applications, separated by commas.</p></div>
@@ -1795,6 +1796,11 @@ const FaceKit = (() => {
       $("spotifynote").textContent = cfg.spotify_key
         ? "Key found: he can find a song, artist, album or playlist and play it, and tell you what's playing."
         : "He can tell you what's playing and play, pause or skip. To play songs by name, add a Spotify key to server/.env (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET; the README shows how) and restart the server. Until then he opens Spotify's search for you to pick.";
+      if (cfg.mac === false) {
+        $("pcplatform").textContent = "This computer isn't a Mac, so here he can only search the web and open websites. Apps, music, volume and Shortcuts need a Mac for now; docs/computer-control-windows.md in the project folder has ideas for adding them on Windows.";
+        $("pcplatform").classList.add("warn");
+        $("spotifynote").textContent = "Spotify and Apple Music control need a Mac for now.";
+      }
       fill(cfg.settings);
       loadMics();
     } catch { /* not served by the launcher: the notice says so */ }

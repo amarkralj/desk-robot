@@ -459,6 +459,11 @@ computer"); the dashboard remembers your choice. Then:
 - **"Run Lights off"**: Apple Shortcuts you pick from the list. He asks
   first, and runs it after you say yes.
 
+Searches and sites work on any computer. Apps, music, volume and Shortcuts
+need a Mac for now (on Windows or Linux the server doesn't offer them to
+him). [docs/computer-control-windows.md](docs/computer-control-windows.md) has
+ideas for adding them on Windows.
+
 He can't type, click, log in or buy anything, and every address and
 command is built by the server from those lists, never by the model. At
 most 3 actions per question and 8 a minute. Each one shows up on the
