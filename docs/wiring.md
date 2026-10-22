@@ -1,9 +1,11 @@
 # Wiring
 
 This is the V2 robot: printed neck and head, power in at the base, the amp and
-speaker in the head. The V2 wiring guide, the custom head and base boards, and
-the print files are sold separately on my website; they aren't in this repo.
-V1's breadboard wiring for the off-the-shelf pan-tilt bracket is free in the
+speaker in the head. Every connection is in the README's
+[Build the body](../README.md#build-the-body) section. The hardware bundle on my
+website adds the print files, the board files, a wiring diagram and an
+illustrated assembly guide. V1's breadboard wiring for the off-the-shelf
+pan-tilt bracket is in the
 [v1.0 release](https://github.com/cgro00/desk-robot/releases/tag/v1.0).
 
 The firmware's pin assignments are in `firmware/include/config.h`.

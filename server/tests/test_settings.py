@@ -50,10 +50,16 @@ class SettingsTests(unittest.TestCase):
         p = settings.robot_payload(s)
         self.assertEqual(p["tz"], "EST5EDT,M3.2.0,M11.1.0")
         self.assertFalse(p["wx"])                     # no location yet: no weather
-        s["weather"].update(lat=40.71003, lon=-74.00997)
+        s["weather"].update(lat=40.71283, lon=-74.00597)
         p = settings.robot_payload(s)
         self.assertTrue(p["wx"])
-        self.assertEqual((p["lat"], p["lon"]), (40.71, -74.01))
+        self.assertEqual((p["lat"], p["lon"]), (40.71, -74.01))   # rounded to ~1 km
+        self.assertEqual(p["idle"], "clock")          # the clock unless you pick a game
+        s["screen"]["idle_screen"] = "tetris"
+        self.assertEqual(settings.robot_payload(s)["idle"], "tetris")
+        self.assertEqual(settings.clean_value("screen", "idle_screen", "roam"), "roam")
+        with self.assertRaises(ValueError):
+            settings.clean_value("screen", "idle_screen", "snake")
 
 
 if __name__ == "__main__":

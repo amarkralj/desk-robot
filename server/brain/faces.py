@@ -9,7 +9,7 @@ same way.
       "name": "Rocky", "author": "...", "description": "...",
       "gap": 16, "y": 0,                    eye spacing, eye height (+ = lower)
       "cyclops": false, "outline": false,   one eye in the middle; outlined eyes
-      "glint": true, "mouth": "talk",       reflection square; mouth: talk | always | never
+      "glint": true, "mouth": "talk",       pupils that look around; mouth: talk | always | never
       "asleep": {eye},                      the shut eyes while sleeping
       "emotions": {
         "happy": {eye, "right": {eye}, "fx": ["blush"], "gaze": [0, 0], "pop": 0.12, "smile": 0},
@@ -124,7 +124,7 @@ def clean(pack) -> dict:
 
 
 def _path(pack_id: str) -> Path:
-    if not _ID.match(pack_id or ""):
+    if not _ID.fullmatch(pack_id or ""):
         raise ValueError("a pack id is lowercase letters, digits and dashes")
     return (CUSTOM_DIR / (pack_id[7:] + ".json")) if pack_id.startswith("custom/") else BUILTIN_DIR / (pack_id + ".json")
 

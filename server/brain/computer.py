@@ -16,7 +16,8 @@ Safety, because anyone (or any TV) that talks near Rocky can ask:
   - Allowlists only. The model picks from names; this module builds every URL and command. Nothing types, clicks,
     logs in, buys, deletes or runs a shell.
   - At most PER_TURN actions per question and PER_MINUTE a minute, so a looping video can't open fifty tabs.
-  - Shortcuts can do anything a shortcut does, so each one waits for a yes in a later turn (computer.confirm_shortcuts).
+  - Shortcuts can do anything a shortcut does, so each one waits for a yes in a later turn (computer.confirm_shortcuts),
+    and only after he has said the shortcut's name out loud while asking.
   - Every action is printed to the server log and shown on the dashboard.
 
 The model's tool definitions come from tools(); main.py hands ACTIONS to the brain. Standard library only (settings.py
@@ -66,6 +67,9 @@ MEDIA_APPS = ("Spotify", "Music")
 _MEDIA_VERB = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 MUSIC_KINDS = {"song": "track", "artist": "artist", "album": "album", "playlist": "playlist"}
+# A confirming answer starts with one of these ("Yes, run it", "Sure.", "Go ahead").
+YES = re.compile(r"^\W*(yes|yeah|yep|yup|yah|ya|sure|ok|okay|alright|all right|affirmative|absolutely|definitely|"
+                 r"correct|confirm|confirmed|do it|go ahead|go for it|run it|please do)\b", re.IGNORECASE)
 SPOTIFY_URI = re.compile(r"^spotify:(track|album|artist|playlist):[A-Za-z0-9]{22}$")
 SPOTIFY_START_S = 12.0   # how long to wait for Spotify to open before giving up
 
@@ -133,7 +137,9 @@ class Computer:
         self.turn = 0
         self._turn_count = 0
         self._times: list[float] = []
-        self._pending: tuple[str, int, float] | None = None   # (shortcut, turn asked, when)
+        # (shortcut, turn asked, when, whether he said its name out loud in that turn's reply)
+        self._pending: tuple[str, int, float, bool] | None = None
+        self._heard: str | None = None                          # the human's words this turn (None: not known)
         self.last: tuple[str, float] | None = None              # (what happened, when): for the dashboard
 
     def configure(self, s: dict) -> None:
@@ -153,11 +159,22 @@ class Computer:
         if was != self.enabled:
             print(f"computer control {'ON' if self.enabled else 'off'}")
 
-    def new_turn(self) -> None:
-        """The human asked something: a fresh per-question budget (and a yes can now count)."""
+    def new_turn(self, heard: str | None = None) -> None:
+        """The human asked something: a fresh per-question budget (and a yes can now count). `heard` is what they
+        said; a shortcut waiting for a yes only runs if it starts with one."""
         with self.lock:
             self.turn += 1
             self._turn_count = 0
+            self._heard = heard
+
+    def said(self, text: str) -> None:
+        """What he said out loud in this turn's reply (main.py, once it's spoken). A shortcut waiting for a yes
+        only counts as asked if its name was in it: the model words the question, so without this a personality's
+        prompt could ask "Want a fun fact?" and take the yes for the shortcut."""
+        with self.lock:
+            p = self._pending
+            if p is not None and p[1] == self.turn and _key(p[0]) in _key(text or ""):
+                self._pending = (p[0], p[1], p[2], True)
 
     def status(self) -> dict:
         return {"on": self.enabled, "last": list(self.last) if self.last else None}
@@ -309,13 +326,17 @@ class Computer:
         if self.confirm_shortcuts:
             with self.lock:
                 p = self._pending
-                ok = (p is not None and p[0] == match and p[1] < self.turn
-                      and time.monotonic() - p[2] <= CONFIRM_WINDOW_S)
+                # The yes is checked here, not left to the model: words from a TV or a sign the camera saw
+                # can't confirm a shortcut.
+                ok = (p is not None and p[0] == match and p[1] < self.turn and p[3]
+                      and time.monotonic() - p[2] <= CONFIRM_WINDOW_S
+                      and (self._heard is None or bool(YES.match(self._heard))))
                 if not ok:
-                    self._pending = (match, self.turn, time.monotonic())
+                    self._pending = (match, self.turn, time.monotonic(), False)
             if not ok:
-                raise NotDone(f"not run yet. Ask your human: \"Run {match}?\" Only call run_shortcut again after they "
-                              "say yes in their next message.")
+                raise NotDone(f"not run yet. Ask your human: \"Run {match}?\" (say its name: a yes only counts if "
+                              "they heard which shortcut). Only call run_shortcut again after they say yes in their "
+                              "next message.")
             with self.lock:
                 self._pending = None
 

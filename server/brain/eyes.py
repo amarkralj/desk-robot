@@ -20,6 +20,7 @@ newest. A tiny HTTP server (standard library, its own thread) serves:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import threading
 import time
@@ -133,14 +134,32 @@ class Eyes:
                 # A malicious web page can point its own domain at 127.0.0.1
                 # (DNS rebinding) and read a localhost server. Only answer
                 # requests addressed to us by a local name.
-                host = (self.headers.get("Host") or "").split(":")[0].strip("[]").lower()
+                host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()   # "[::1]:8767" too
                 if host not in local_hosts:
+                    self._reply(403, "text/plain", b"forbidden")
+                    return False
+                # Another site's page making the browser fetch us (an <img>, a script) is refused; following a
+                # link to the page is fine.
+                if (self.headers.get("Sec-Fetch-Site") == "cross-site"
+                        and self.headers.get("Sec-Fetch-Dest", "document") != "document"):
                     self._reply(403, "text/plain", b"forbidden")
                     return False
                 return True
 
+            def _from_this_computer(self) -> bool:
+                # The controls answer this computer only, even if LIVE_VIEW_BIND opens the page to the LAN:
+                # the header and Origin checks stop browsers, not a script on another machine.
+                try:
+                    ip = ipaddress.ip_address(self.client_address[0].split("%")[0])
+                except ValueError:
+                    return False
+                return ip.is_loopback or bool(getattr(ip, "ipv4_mapped", None) and ip.ipv4_mapped.is_loopback)
+
             def do_POST(self) -> None:
                 if not self._local():
+                    return
+                if not self._from_this_computer():
+                    self._reply(403, "application/json", b'{"error": "controls answer this computer only"}')
                     return
                 # Controls: a page on another site could still POST here
                 # (browsers allow simple cross-site POSTs), so demand a custom
@@ -161,7 +180,7 @@ class Eyes:
                     payload = json.loads(self.rfile.read(length) or b"{}")
                     if not isinstance(payload, dict):
                         raise ValueError("body must be a JSON object")
-                except (ValueError, json.JSONDecodeError) as e:
+                except (ValueError, json.JSONDecodeError, RecursionError) as e:
                     self._reply(400, "application/json", json.dumps({"error": f"bad request: {e}"}).encode())
                     return
                 action = self.path[len("/api/"):]
@@ -212,6 +231,8 @@ class Eyes:
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")  # robot-supplied bytes stay images
+                self.send_header("X-Frame-Options", "DENY")                  # no framing (clickjacking)
+                self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
                 self.end_headers()
                 self.wfile.write(body)
 

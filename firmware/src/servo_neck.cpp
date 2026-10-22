@@ -57,6 +57,9 @@ void ServoNeck::waitForGap(bool afterPeriodStart) {
     if (c < last) started = true;
     last = c;
     if (started && c > lo && c < hi) return;
+    // Look again in 1 ms instead of spinning: the window is 14 ms wide, so a 1 ms step can't miss it, and the
+    // screen and loop() get the CPU meanwhile (spinning here held the face up to 20 ms).
+    vTaskDelay(1);
   }
 }
 

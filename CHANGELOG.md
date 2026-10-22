@@ -3,7 +3,7 @@
 Each version of the robot is a git tag and a GitHub Release. `main` is the
 latest work. A video matches the tagged version it was made with.
 
-## Unreleased (V2, in progress)
+## v2.0
 
 Hardware:
 
@@ -11,8 +11,8 @@ Hardware:
   (±95°), tilt ±85°, the 2.42" SSD1309 screen, the camera on its side in
   the head, the Dayton CE32A-8 speaker and the amp in the head, power in at
   the base. Replaces the off-the-shelf SG90 bracket.
-- Custom head and base boards in place of the perfboards (sold with the
-  print files and the wiring guide).
+- Custom head and base boards in place of the perfboards (the board files
+  are in the hardware bundle; the connections are in the README).
 
 Software:
 
@@ -22,9 +22,11 @@ Software:
   Start / Stop button for the brain.
 - Face packs: twelve emotions, four built-in looks, your own made in the
   dashboard.
+- Personalities: make new characters in the dashboard from a short
+  description (name and wake word, Fish Audio voice, Fish's Drama 3 model
+  for sighs, laughs and whispers). Rocky stays the default.
 - Seeing: a picture with every question, sharp stills when he looks, and
-  local models that notice people, faces, gestures and objects. A wave
-  wakes him.
+  a local model that finds faces so he can follow you. A wave wakes him.
 - Voice tuned for the CE32A-8 (bass cut at 300 Hz, peaks kept under the
   amp's clean limit).
 - Language model: Claude Haiku 5.5 (was Haiku 4.5).

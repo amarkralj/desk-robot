@@ -188,6 +188,7 @@ void Face::setStill(bool on, Emotion e) {
   pop_ = squint_ = twitch_ = 0;
   gazeX_ = gazeTargetX_;
   gazeY_ = gazeTargetY_;
+  pupilX_ = pupilY_ = pupilTargetX_ = pupilTargetY_ = 0;
   mouth_ = 0;
   talking_ = false;
   jitterX_ = 0;
@@ -262,6 +263,24 @@ void Face::setAsleep(bool on) {
   }
 }
 
+void Face::setRoaming(bool on) {
+  if (on == roaming_) return;
+  roaming_ = on;
+  if (on && asleep_) {
+    pop_ = 1.0f;  // eyes spring open
+    blinkAmount_ = 0.0f;
+    gazeTargetX_ = gazeTargetY_ = 0;
+  }
+}
+
+void Face::lookToward(float x, float y, uint32_t holdMs) {
+  pupilTargetX_ = constrain(x, -1.0f, 1.0f);
+  pupilTargetY_ = constrain(y, -1.0f, 1.0f);
+  gazeTargetX_ = pupilTargetX_ * 6.0f;   // the whole eye leans that way a little too
+  gazeTargetY_ = pupilTargetY_ * 3.0f;
+  nextPupilMs_ = nextSaccadeMs_ = millis() + holdMs;
+}
+
 void Face::setTalking(bool on, float level) {
   talking_ = on;
   mouthLevel_ = constrain(level, 0.0f, 1.0f);
@@ -270,18 +289,18 @@ void Face::setTalking(bool on, float level) {
 void Face::stepAnimation(uint32_t nowMs) {
   frame_++;
   if (still_) return;
-  const EmotionLook& look = pack_.looks[static_cast<int>(emotion_)];
+  const EmotionLook& look = pack_.looks[static_cast<int>(shown())];
 
   // Morph the eye shapes toward the current emotion (or shut, if asleep).
-  float f = asleep_ ? 0.12f : 0.25f;  // eyes close slowly, change fast
-  morph(curL_, asleep_ ? pack_.asleep : look.l, f);
-  morph(curR_, asleep_ ? pack_.asleep : look.r, f);
-  smile_ = approach(smile_, asleep_ ? 0 : look.smile, f);
+  float f = sleepLook() ? 0.12f : 0.25f;  // eyes close slowly, change fast
+  morph(curL_, sleepLook() ? pack_.asleep : look.l, f);
+  morph(curR_, sleepLook() ? pack_.asleep : look.r, f);
+  smile_ = approach(smile_, sleepLook() ? 0 : look.smile, f);
 
   pop_ *= 0.82f;
   squint_ *= 0.85f;
 
-  if (asleep_) {
+  if (sleepLook()) {
     // Slow breathing; the odd dream twitch; Z's drifting up.
     breath_ += 0.035f;
     blinkAmount_ = 0.0f;
@@ -342,6 +361,17 @@ void Face::stepAnimation(uint32_t nowMs) {
       if (random(100) < 40) gazeTargetX_ = gazeTargetY_ = 0;
       nextSaccadeMs_ = nowMs + random(1200, 4000);
     }
+    if (nowMs >= nextPupilMs_) {
+      // The pupils look at something new: a quick dart, about a third of the time back near the middle.
+      if (random(100) < 35) {
+        pupilTargetX_ = random(-25, 26) / 100.0f;
+        pupilTargetY_ = random(-20, 21) / 100.0f;
+      } else {
+        pupilTargetX_ = random(-90, 91) / 100.0f;
+        pupilTargetY_ = random(-60, 61) / 100.0f;
+      }
+      nextPupilMs_ = nowMs + random(600, 2600);
+    }
     if (nowMs >= nextSquintMs_ && emotion_ == Emotion::Neutral) {
       squint_ = 1.0f;
       nextSquintMs_ = nowMs + random(8000, 16000);
@@ -391,6 +421,8 @@ void Face::stepAnimation(uint32_t nowMs) {
 
   gazeX_ = approach(gazeX_, gazeTargetX_, 0.35f);
   gazeY_ = approach(gazeY_, gazeTargetY_, 0.35f);
+  pupilX_ = approach(pupilX_, pupilTargetX_, 0.5f);   // eyes dart: there in a few frames
+  pupilY_ = approach(pupilY_, pupilTargetY_, 0.5f);
 }
 
 // ── drawing ─────────────────────────────────────────────────────────────────
@@ -504,12 +536,43 @@ void Face::drawEye(const EyeShape& e, float cx, float cy, int inner, float hScal
       if (on) dot(x, y, 1);
     }
   }
-  // Glint: a small dark square high in the eye, offset by the gaze so it reads as a reflection.
-  if (pack_.glint && !pack_.outline && h > 12 && !asleep_) {
-    int gx = static_cast<int>(floorf(g.left + w * 0.22f + gazeX_ * 0.3f));
-    int gy = static_cast<int>(floorf(g.top + h * 0.18f + e.lid));
-    int gs = w > 34 ? 4 : 3;
-    rect(gx, gy, gs, gs, 0);
+  // Pupil: a dark disc (lit in outline packs) with a small highlight, somewhere in the part of the eye that shows,
+  // so lids and cheeks cover it like real ones. It also leans the way the whole eye is glancing.
+  if (pack_.glint && h > 12 && !sleepLook()) {
+    float r = constrain(g.w * 0.14f, 3.0f, 6.0f);   // ~10 px across on a 34 px eye
+    int top = -1, bot = -1;
+    for (int y = y0; y < y1; ++y) {
+      if (inEye(g, g.cx, y + 0.5f)) {
+        if (top < 0) top = y;
+        bot = y;
+      }
+    }
+    if (top < 0) return;
+    float vcy = (top + bot + 1) * 0.5f;
+    int left = -1, right = -1;
+    for (int x = x0; x < x1; ++x) {
+      if (inEye(g, x + 0.5f, vcy)) {
+        if (left < 0) left = x;
+        right = x;
+      }
+    }
+    if (left < 0) return;
+    float vcx = (left + right + 1) * 0.5f;
+    float roomX = fmaxf(0, (right - left + 1) * 0.5f - r - 2.0f), roomY = fmaxf(0, (bot - top + 1) * 0.5f - r - 1.5f);
+    float px = constrain(pupilX_ + gazeX_ / 12.0f, -1.0f, 1.0f), py = constrain(pupilY_ + gazeY_ / 8.0f, -1.0f, 1.0f);
+    float pcx = vcx + px * roomX, pcy = vcy + py * roomY;
+    uint8_t ink = pack_.outline ? 1 : 0;
+    int ri = static_cast<int>(ceilf(r));
+    for (int y = static_cast<int>(floorf(pcy)) - ri; y <= static_cast<int>(floorf(pcy)) + ri; ++y) {
+      for (int x = static_cast<int>(floorf(pcx)) - ri; x <= static_cast<int>(floorf(pcx)) + ri; ++x) {
+        float dx = x + 0.5f - pcx, dy = y + 0.5f - pcy;
+        if (dx * dx + dy * dy <= r * r && inEye(g, x + 0.5f, y + 0.5f)) dot(x, y, ink);
+      }
+    }
+    if (!pack_.outline && r >= 4) {   // the highlight: up and to the left in the pupil
+      int hx = static_cast<int>(floorf(pcx - r * 0.5f)), hy = static_cast<int>(floorf(pcy - r * 0.55f));
+      if (inEye(g, hx + 0.5f, hy + 0.5f)) rect(hx, hy, 2, 2, 1);
+    }
   }
 }
 
@@ -537,7 +600,7 @@ void Face::drawMouth(int cx, int cy, int eyeBottom) {
 }
 
 void Face::drawFlourishes(float leftOuter, float rightOuter, int eyeTop, int eyeBottom) {
-  const EmotionLook& look = pack_.looks[static_cast<int>(emotion_)];
+  const EmotionLook& look = pack_.looks[static_cast<int>(shown())];
   uint16_t fx = look.fx;
   uint32_t since = millis() - emotionSinceMs_;
   int lo = static_cast<int>(floorf(leftOuter)), ro = static_cast<int>(floorf(rightOuter));
@@ -597,11 +660,11 @@ void Face::drawZeds() {
 
 void Face::render() {
   u8g2_.clearBuffer();
-  const EmotionLook& look = pack_.looks[static_cast<int>(emotion_)];
-  bool lively = !still_ && !asleep_;
+  const EmotionLook& look = pack_.looks[static_cast<int>(shown())];
+  bool lively = !still_ && !sleepLook();
 
   // Vertical bob: breathing while asleep, a bounce with the mouth while talking.
-  float bob = asleep_ ? sinf(breath_) * 2.0f : -mouth_ * 2.0f;
+  float bob = sleepLook() ? sinf(breath_) * 2.0f : -mouth_ * 2.0f;
   if (lively && (look.fx & FX_BOUNCE)) bob -= fabsf(sinf(frame_ * 0.18f)) * 3.0f;
   float sway = (lively && (look.fx & FX_WOBBLE)) ? sinf(frame_ * 0.08f) * 3.0f : 0.0f;
   float cy = SCREEN_H / 2 + pack_.y + gazeY_ + bob;
@@ -611,7 +674,7 @@ void Face::render() {
   // Height scale: emotion-change overshoot, idle squint, dream twitch.
   float hScale = 1.0f + pop_ * look.pop;
   hScale *= 1.0f - squint_ * 0.4f;
-  if (asleep_) hScale += twitch_ * 2.5f;  // eyelids flutter open a crack
+  if (sleepLook()) hScale += twitch_ * 2.5f;  // eyelids flutter open a crack
 
   float leftOuter, rightOuter;
   if (pack_.cyclops) {
@@ -630,7 +693,7 @@ void Face::render() {
 
   int eyeTop = static_cast<int>(floorf(cy - curL_.h * hScale / 2));
   int eyeBottom = static_cast<int>(floorf(cy + curL_.h * hScale / 2));
-  if (asleep_) {
+  if (sleepLook()) {
     drawZeds();
   } else {
     if (!still_) drawFlourishes(leftOuter, rightOuter, eyeTop, eyeBottom);

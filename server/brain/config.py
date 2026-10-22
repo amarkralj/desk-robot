@@ -17,33 +17,42 @@ if _ENV_FILE.is_file():
         if _v:  # a blank line in .env means "not set", not "set to nothing"
             os.environ.setdefault(_k.strip(), _v)
 
+from . import settings as _settings
+from . import characters as _characters
+
+# Who he is: Rocky (built in, personality.py), or a character made in the dashboard's Personalities tab
+# (server/characters/<id>.json), which brings its own name, voice and wake words (they replace Rocky's below).
+# Read once at start: switching characters restarts the brain.
+CHARACTER_ID, CHARACTER = _characters.active(_settings.load()["character"]["id"])
+
 # The robot's name — the wake word is "hey <name>".
-ROBOT_NAME = "Rocky"
+ROBOT_NAME = CHARACTER["name"] if CHARACTER else "Rocky"
 
 # Your name — Rocky calls you this. Set it in the dashboard (Settings > Rocky; saved in server/settings.json), or as
 # HUMAN_NAME in server/.env; "friend" until you do. Read once at start: the character prompt is built from it.
-from . import settings as _settings
 HUMAN_NAME = _settings.load()["rocky"]["human_name"] or os.environ.get("HUMAN_NAME", "friend")
 
 # Language model. The brain speaks the OpenAI-style chat API, which
-# OpenRouter, Anthropic and OpenAI all serve, so pick a provider here and
-# put its key in server/.env as LLM_API_KEY. OpenRouter is the default
-# because one key reaches every model, and the model is just a string:
+# OpenRouter, Anthropic and OpenAI all serve, so pick a provider and put its
+# key in server/.env as LLM_API_KEY. OpenRouter is the default because one key
+# reaches every model, and the model is just a string. To use another, set
+# LLM_BASE_URL and LLM_MODEL in server/.env (or change the defaults below):
 #
 #   provider    LLM_BASE_URL                       MODEL (examples)
 #   OpenRouter  https://openrouter.ai/api/v1       anthropic/claude-haiku-5.5   (fast, stays in character, ~$0.0005 a question)
 #                                                  google/gemini-2.5-flash-lite (cheapest that still sounds like Rocky)
 #                                                  openai/gpt-4.1-mini          (middle ground)
-#   Anthropic   https://api.anthropic.com/v1/      claude-haiku-4-5
+#   Anthropic   https://api.anthropic.com/v1/      claude-haiku-5-5             (the same Haiku 5.5, billed by Anthropic)
 #   OpenAI      https://api.openai.com/v1          gpt-4.1-mini
 #
 # The model must accept images (Rocky sends camera frames) and tool calls
 # (he moves his head with them).
-LLM_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL = "anthropic/claude-haiku-5.5"
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or "https://openrouter.ai/api/v1"
+MODEL = os.environ.get("LLM_MODEL") or "anthropic/claude-haiku-5.5"
 # Haiku 5.5 thinks before it answers unless told not to: hidden reasoning that delays his first word by a second or
 # more, and with a picture can use up the whole reply so he says nothing. His replies are a few sentences in
-# character, not puzzles, so it's off. Sent to OpenRouter only (its "reasoning" option); other providers get nothing.
+# character, not puzzles, so it's off. Sent to OpenRouter (its "reasoning" option) and Anthropic (its "thinking"
+# option; without it a question with a picture can come back empty); other providers get nothing.
 LLM_REASONING = False
 
 # WebSocket port the robot connects to.
@@ -75,12 +84,25 @@ PORT = 8765
 # The console page has sliders for level / bass cut / presence that apply
 # live; set the winners here to keep them.
 TTS_VOICE_ID = "6dd07916890445e59c5f019ad0fc7879"
+TTS_MODEL = ""    # Fish's model (its `model` header): "" = Fish's default, "drama-3" = Drama 3. A character sets its own
+TTS_ACTING = False  # the voice model performs [directions] and <whisper>...</whisper> (Drama 3), so they're kept in
 TTS_TEMPERATURE = 0.4
 TTS_TOP_P = 0.6
 REPLY_MAX_SENTENCES = 3
 TTS_LEVEL = 0.12
 TTS_HIGHPASS_HZ = 300.0
 TTS_PRESENCE_DB = 0.0
+# Any voice, not just Rocky's (mouth.Leveler / Equalizer):
+#   TTS_CONE_LIMIT  how far the speaker's cone may travel (relative; 0 = off). Loud, deep syllables (a laugh, a
+#                   shout, a voice with a lot of body) push the small cone past its limit and it distorts; above this
+#                   only the low part of the voice is turned down. 0.15 is where Rocky's loudest lines sit.
+#   TTS_AUTO_PRESENCE  learn each voice's balance and lift its 1-4 kHz (clarity) when it's heavy in the low mids,
+#                   which sounds muffled on this speaker, toward TTS_CLARITY_DB (clarity energy vs 300 Hz-1 kHz, dB;
+#                   Rocky's voice is about -1.2) by at most TTS_AUTO_PRESENCE_MAX dB, on top of TTS_PRESENCE_DB.
+TTS_CONE_LIMIT = 0.15
+TTS_AUTO_PRESENCE = True
+TTS_CLARITY_DB = -1.5
+TTS_AUTO_PRESENCE_MAX = 6.0
 
 # Text-to-speech. The voice comes from Fish Audio (TTS_VOICE_ID above).
 TTS_FALLBACK_VOICE = "Fred"  # built-in voice used until Fish Audio is set up: a macOS `say`
@@ -116,6 +138,11 @@ WAKE_PHRASES = [  # what speech-to-text tends to hear for "hey Rocky"
     "a rocky",
     "hey ricky",
 ]
+if CHARACTER:
+    TTS_VOICE_ID = CHARACTER["voice_id"]
+    TTS_MODEL = CHARACTER["tts_model"]
+    TTS_ACTING = TTS_MODEL in _characters.ACTING_MODELS
+    WAKE_PHRASES = CHARACTER["wake_words"]
 STT_MODEL = "base.en"    # faster-whisper model: base.en ~0.3 s per utterance on an Apple
                          # Silicon Mac, small.en hears a little better but takes ~1 s
 # The Hugging Face commit of that model to download (Systran/faster-whisper-<STT_MODEL>).
@@ -125,6 +152,7 @@ STT_THREADS = 8          # CPU threads for transcription (0 = library default of
 STT_PROMPT = f"Hey {ROBOT_NAME}. {ROBOT_NAME} is a robot."  # name hint for the model
 MIC_SOURCE = "auto"      # "robot" = the robot's mic, "mac" = MIC_DEVICE below,
                          # "auto" = robot when it's connected, else this computer
+                         # (the dashboard's "He listens through" sets both: settings rocky.mic / mic_device)
 SPEAKER_OUT = "robot"    # where Rocky's voice plays: "robot" = the robot's speaker when it's connected
                          # (else this computer), "computer" = always this computer. The live view
                          # switches it too (until restart).
@@ -170,10 +198,11 @@ from .faces import EMOTIONS  # noqa: E402
 # Camera. The robot streams JPEGs while connected; the live view
 # is at http://localhost:<LIVE_VIEW_PORT>/ on this computer.
 CAMERA_FPS = 10
-CAMERA_STREAM_SIZE = "vga"   # "vga" 640x480 (sharper tracking and perception, ~170 KB/s of WiFi) or "qvga" 320x240
+CAMERA_STREAM_SIZE = "vga"   # "vga" 640x480 (sharper face tracking, ~170 KB/s of WiFi) or "qvga" 320x240
 LIVE_VIEW_PORT = 8767   # the brain's own page + API. The launcher (server/launcher.py) serves the dashboard on 8766
                         # and passes these through; without the launcher, open this port directly
-LIVE_VIEW_BIND = "127.0.0.1"  # this computer only. "0.0.0.0" would show the camera to the whole LAN.
+LIVE_VIEW_BIND = "127.0.0.1"  # this computer only. "0.0.0.0" would show the page and camera to the whole LAN
+                              # (the controls still answer this computer only).
 SEND_CAMERA_TO_BRAIN = True  # let Rocky see the camera at all (False = no picture ever goes to the model)
 # Seeing better (dashboard: Settings > Vision).
 #   VISION_EVERY_QUESTION  attach the camera's picture to every question while he's awake, not only ones about
@@ -183,25 +212,37 @@ SEND_CAMERA_TO_BRAIN = True  # let Rocky see the camera at all (False = no pictu
 #                          talking, while your words are turned into text, so it costs no time): "svga" 800x600,
 #                          "xga" 1024x768, "uxga" 1600x1200, "" = stream frame. A context picture (above) is the
 #                          stream frame: a sharp one makes every answer ~0.4 s slower
-#   PERCEPTION             watch the stream with local models for people, faces, gestures and objects
-#                          (brain/perception.py) and tell him what they notice with every question
-#   GESTURE_REACTIONS      a wave wakes him; a thumbs up or down shows on his face
+#   PERCEPTION             watch the stream with two small local models (brain/perception.py): faces (a short
+#                          note next to the picture with questions about seeing) and hands (for a wave)
+#   GESTURE_REACTIONS      a wave wakes him (objects and what you hold come from the picture, read by the model)
 VISION_EVERY_QUESTION = True
 SNAPSHOT_SIZE = "xga"
 PERCEPTION = True
-PERCEPTION_FPS = 8.0         # looks per second (hands every look; faces and objects every other)
+PERCEPTION_FPS = 8.0         # looks per second (hands every look; faces every other)
 GESTURE_REACTIONS = True
-# A question with any of these words or phrases is about seeing: he waits for a sharp still and is told to look at
-# it. Other questions get the picture only for context (VISION_EVERY_QUESTION), or none. Everyday words like "this",
-# "that", "here", "there" and "right" are deliberately NOT in the list: they made him describe the room in answers
-# that had nothing to do with it. He can always use his `look` ability to get a fresh picture on his own.
+# A question with any of these phrases (whole words, anywhere in it) is about seeing: he waits for a sharp still
+# and is told to look at it. Other questions get the picture only for context (VISION_EVERY_QUESTION), or none.
+# Phrases, not single words: "see", "look", "watch", "who is" and "how many" alone sent a picture with "see you
+# later", "look, I had a rough day", "who is Grace?" and "how many legs does a spider have?", and he described the
+# room. He can always use his `look` ability to get a fresh picture on his own.
 CAMERA_WORDS = [
-    "see", "seeing", "look", "looking", "watch", "watching", "camera", "picture",
-    "photo", "image", "view", "describe", "notice", "recognize", "recognise",
-    "holding", "wearing", "what color", "what colour", "what am i", "who is",
-    "who's", "how many", "in front of you", "behind you", "on my desk", "on the desk",
-    "in the room", "whiteboard", "on the screen", "on my screen", "read this", "read that",
-    "read the", "read what",
+    # asking what he sees
+    "what do you see", "what can you see", "can you see", "do you see", "what you see", "are you seeing",
+    "what is this", "what's this",
+    "what are you looking at", "what do you notice", "do you notice", "notice anything",
+    # pointing him at something
+    "look at", "take a look", "have a look", "look around", "watching me",
+    # what the human shows or wears
+    "what am i holding", "what i'm holding", "what is this i'm holding", "what am i wearing", "what i'm wearing",
+    "how do i look", "do i look", "how many fingers", "what color is this", "what colour is this",
+    "what color is my", "what colour is my", "what color am i", "what colour am i",
+    "who is this", "who is that", "who's this", "who's that", "who is here", "who's here", "who is with me",
+    "recognize me", "recognise me", "recognize this", "recognise this", "recognize that", "recognise that",
+    "describe what", "describe this", "describe that", "describe me", "describe my",
+    # the camera, and places in view
+    "your camera", "the camera", "a picture", "a photo", "in front of you", "behind you", "on my desk",
+    "on the desk", "in the room", "whiteboard", "on the screen", "on my screen",
+    "read this", "read that", "read what", "can you read",
 ]
 
 # Body language (body.py): small head moves that go with his emotion while he talks, and a thinking glance while he

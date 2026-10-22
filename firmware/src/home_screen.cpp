@@ -53,6 +53,9 @@ bool HomeScreen::applyJson(const char* json, bool save) {
   n.nightStart = parseHHMM(doc["n0"] | "", n.nightStart);
   n.nightEnd = parseHHMM(doc["n1"] | "", n.nightEnd);
   n.nightBright = constrain(static_cast<int>(doc["nbri"] | static_cast<int>(n.nightBright)), 1, 100);
+  IdleMode idle;
+  if (idleModeFromName(doc["idle"] | "", idle)) n.idle = idle;
+  if (n.idle != games_.mode()) games_.reset(n.idle);      // a fresh game when it's switched on (or after a reboot)
 
   bool tzChanged = strcmp(n.tz, s_.tz) != 0;
   bool wxChanged = n.weather != s_.weather || n.lat != s_.lat || n.lon != s_.lon || n.unit != s_.unit;
@@ -76,11 +79,12 @@ bool HomeScreen::applyJson(const char* json, bool save) {
     snprintf(t0, sizeof(t0), "%02u:%02u", s_.nightStart / 60, s_.nightStart % 60);
     snprintf(t1, sizeof(t1), "%02u:%02u", s_.nightEnd / 60, s_.nightEnd % 60);
     out["n0"] = t0; out["n1"] = t1; out["nbri"] = s_.nightBright;
+    out["idle"] = idleModeName(s_.idle);
     String js;
     serializeJson(out, js);
     Preferences p;
     p.begin("home", false);
-    p.putString("json", js);
+    if (p.getString("json", "") != js) p.putString("json", js);   // only write flash when something changed
     p.end();
   }
   return true;
@@ -121,7 +125,7 @@ bool HomeScreen::fetchWeather(Weather& w) {
   portEXIT_CRITICAL(&lock_);
   char url[360];
   snprintf(url, sizeof(url),
-           "http://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+           "http://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f"
            "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
            "&timezone=auto&forecast_days=1&temperature_unit=%s",
            s.lat, s.lon, s.unit == 'c' ? "celsius" : "fahrenheit");
@@ -165,6 +169,17 @@ bool HomeScreen::isNight(const struct tm& t) const {
   return m >= s_.nightStart || m < s_.nightEnd;                 // e.g. 23:00 .. 07:00
 }
 
+bool HomeScreen::roamingNow() {
+  if (s_.idle != IdleMode::Roam) return false;
+  uint32_t now = millis();
+  if (roamCheckMs_ == 0 || now - roamCheckMs_ >= 1000) {
+    roamCheckMs_ = now ? now : 1;
+    struct tm t;
+    roamDay_ = !(getLocalTime(&t, 0) && isNight(t));   // no time yet: roam
+  }
+  return roamDay_;
+}
+
 void HomeScreen::restoreDisplay() {
   if (dark_) { u8g2_.setPowerSave(0); dark_ = false; }
   contrast_ = dayContrast();
@@ -199,6 +214,20 @@ void HomeScreen::draw() {
   u8g2_.clearBuffer();
   u8g2_.setDrawColor(1);
   char buf[32];
+  if (s.idle != IdleMode::Clock && s.idle != IdleMode::Roam) {      // a game, with the time small in a corner
+    if (!haveTime) {
+      strlcpy(buf, "--:--", sizeof(buf));
+    } else if (s.h24) {
+      snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
+    } else {
+      int h12 = t.tm_hour % 12 == 0 ? 12 : t.tm_hour % 12;
+      snprintf(buf, sizeof(buf), "%d:%02d %s", h12, t.tm_min, t.tm_hour < 12 ? "AM" : "PM");
+    }
+    games_.step();
+    games_.draw(buf, dx, dy);
+    u8g2_.sendBuffer();
+    return;
+  }
   if (!haveTime) {
     u8g2_.setFont(u8g2_font_logisoso28_tn);
     u8g2_.drawStr(64 - u8g2_.getStrWidth("--:--") / 2 + dx, 40 + dy, "--:--");
@@ -331,7 +360,8 @@ void HomeScreen::printStatus() {
   struct tm t;
   char now[32] = "not set yet";
   if (getLocalTime(&t, 0)) strftime(now, sizeof(now), "%Y-%m-%d %H:%M:%S", &t);
-  Serial.printf("home: time %s (tz %s), %s clock, weekday %s\n", now, s.tz, s.h24 ? "24h" : "12h", s.weekday ? "on" : "off");
+  Serial.printf("home: time %s (tz %s), %s clock, weekday %s, showing %s\n", now, s.tz, s.h24 ? "24h" : "12h",
+                s.weekday ? "on" : "off", idleModeName(s.idle));
   Serial.printf("home: weather %s at %.4f, %.4f in %c every %u min; brightness %u%%, night %s %02u:%02u-%02u:%02u (%u%%)\n",
                 s.weather ? "on" : "off", s.lat, s.lon, s.unit, s.wxMinutes, s.bright,
                 s.night == 0 ? "off" : s.night == 1 ? "dim" : "dark", s.nightStart / 60, s.nightStart % 60,

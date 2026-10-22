@@ -36,8 +36,29 @@ _EMOTION_TAG = re.compile(r"^\s*\[(\w+)\]\s*", re.S)
 _SENTENCE_END = re.compile(r"(?<=[!?])\s+|(?<=[^.]\.)(?<!\bMr\.)(?<!\bMrs\.)(?<!\bMs\.)(?<!\bDr\.)(?<!\bSt\.)"
                            r"(?<!\bJr\.)(?<!\bSr\.)(?<!\bvs\.)\s+", re.IGNORECASE)
 
-# An action returns (text for the model, optional fresh camera JPEG).
-Action = Callable[[dict], tuple[str, bytes | None]]
+# The model thinking out loud about its instructions instead of talking to its human ("The question is 'what is
+# this?' and the detector note says a thumbs down, but the question is about seeing. I should look to get a
+# picture."). The prompt says not to; a sentence like this is dropped before it's spoken, as a backstop.
+_REASONING = re.compile(r"\b(?:detectors?|the note|note says|the question is|question is about|the user|"
+                        r"my instructions|the instructions say|system prompt|"
+                        r"i should (?:look|use|call|check|get|describe|answer))\b", re.IGNORECASE)
+
+
+def _thinking_aloud(sentence: str) -> bool:
+    if _REASONING.search(sentence):
+        print(f"  (not said, thinking out loud: {sentence[:120]})")
+        return True
+    return False
+
+
+def _without_thinking(text: str) -> str:
+    """The model's text with those sentences taken out, for his memory: so he doesn't pick the habit up from it."""
+    return " ".join(p for p in _SENTENCE_END.split(text) if p.strip() and not _REASONING.search(p)).strip()
+
+
+# An action returns (text for the model, optional fresh camera JPEG), or (text, JPEG, done): done = nothing more to
+# say about it (a head turn with no picture), so the reply ends there once he has said his line, like a quick action.
+Action = Callable[[dict], tuple]
 
 TOOLS = [
     {
@@ -45,12 +66,13 @@ TOOLS = [
         "function": {
             "name": "look",
             "description": (
-                "Move your head to look somewhere. Use it whenever you are asked to "
-                "look left/right/down/up/around, or need to see something outside "
+                "Move your head. Use it whenever you are asked to turn, move or point your "
+                "head, to look left/right/down/up/around, or need to see something outside "
                 "the current picture. Always call it when asked, even if you think "
                 "you are already there: the result tells you where your head really "
-                "is and whether it is at a limit. You get a fresh camera image "
-                "afterwards; describe only what that image shows. Your neck turns up "
+                "is and whether it is at a limit. With see true you get a fresh camera image "
+                "afterwards; describe only what that image shows. With see false there is "
+                "no picture: just say where your head went, nothing about the room. Your neck turns up "
                 f"to {config.TRACK_PAN_LIMIT:.0f} degrees left or right and tilts up to "
                 f"{config.TRACK_TILT_MAX:.0f} degrees up or {-config.TRACK_TILT_MIN:.0f} down."
             ),
@@ -73,9 +95,30 @@ TOOLS = [
                             "Omit for a normal look."
                         ),
                     },
+                    "see": {
+                        "type": "boolean",
+                        "description": (
+                            "true when your human wants to know what is there (look at the door, check "
+                            "something, what is over there). false when they only tell you to move, turn "
+                            "or point your head (turn left, look up, head down) and ask nothing about "
+                            "what is there."
+                        ),
+                    },
                 },
-                "required": ["direction"],
+                "required": ["direction", "see"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dance",
+            "description": (
+                "Dance with your head for about 10 seconds: one of your four routines, picked at random. Use it "
+                "when your human asks you to dance, groove, vibe to music or show your moves. Say one short excited "
+                "line first (or nothing); the dance starts when you finish it. Don't describe the dance."
+            ),
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -110,9 +153,16 @@ class RobotBrain:
             api_key=os.environ.get("LLM_API_KEY", "missing"),
             default_headers={"X-Title": "desk-robot"},  # shows up in OpenRouter's usage page; others ignore it
         )
-        # OpenRouter's switch for the model's hidden reasoning (config.LLM_REASONING); other providers get nothing extra.
-        self._extra = {} if config.LLM_REASONING or "openrouter.ai" not in config.LLM_BASE_URL else \
-            {"reasoning": {"enabled": False}}
+        # The model's hidden reasoning, off unless config.LLM_REASONING. Each provider has its own switch for it
+        # (OpenRouter's "reasoning", Anthropic's "thinking"); other providers get nothing extra.
+        if config.LLM_REASONING:
+            self._extra = {}
+        elif "openrouter.ai" in config.LLM_BASE_URL:
+            self._extra = {"reasoning": {"enabled": False}}
+        elif "api.anthropic.com" in config.LLM_BASE_URL:
+            self._extra = {"thinking": {"type": "disabled"}}
+        else:
+            self._extra = {}
         self.history: list[dict] = []
         self.actions = actions or {}
         self.extra_tools = extra_tools or (lambda: [])
@@ -148,7 +198,7 @@ class RobotBrain:
             content.append({"type": "text", "text": "(Live picture from your camera, taken just now, for context. Use it if it helps; don't describe it unless the question is about it.)"})
             content.append(_image_part(jpeg))
         elif jpeg is not None:
-            content.append({"type": "text", "text": "(Live picture from your camera, taken just now, because the question seems to be about what you can see. If it isn't, ignore the picture.)"})
+            content.append({"type": "text", "text": "(Live picture from your camera, taken just now, because the question seems to be about what you can see. If it isn't, ignore the picture and don't mention it.)"})
             content.append(_image_part(jpeg))
         elif camera_wanted:
             content.append({"type": "text", "text": "(Your camera has no fresh picture right now, so you cannot see anything at the moment.)"})
@@ -258,7 +308,7 @@ class RobotBrain:
                     parts = _SENTENCE_END.split(buf)
                     while len(parts) > 1:  # everything but the last piece is a whole sentence
                         s = parts.pop(0).strip()
-                        if s:
+                        if s and not _thinking_aloud(s):
                             spoken += 1
                             said += 1
                             yield s
@@ -279,13 +329,14 @@ class RobotBrain:
 
             if calls:
                 # He decided to do something: say any lead-in, run it, tell him what happened.
-                if buf.strip():
+                if buf.strip() and not _thinking_aloud(buf.strip()):
                     said += 1
                     yield buf.strip()
                     buf = ""
+                written = "".join(raw)
                 self.history.append({
                     "role": "assistant",
-                    "content": "".join(raw),
+                    "content": _without_thinking(written) or (f"[{self.emotion}]" if written.strip() else ""),
                     "tool_calls": [
                         {"id": c["id"], "type": "function",
                          "function": {"name": c["name"], "arguments": c["arguments"]}}
@@ -302,18 +353,20 @@ class RobotBrain:
                     except json.JSONDecodeError:
                         args = {}
                     action = self.actions.get(c["name"])
-                    ok = False
+                    ok = done = False
                     if action is None:
                         text = f"unknown ability {c['name']}"
                     else:
                         try:
-                            text, img = action(args)
+                            result = action(args)
+                            text, img = result[0], result[1]
+                            done = len(result) > 2 and bool(result[2])
                             ok = True
                         except Exception as e:  # the robot didn't cooperate; say so
                             text, img = f"could not do that: {e}", None
                         if img:
                             fresh = img
-                    all_quick = all_quick and ok and c["name"] in self.quick
+                    all_quick = all_quick and ok and (c["name"] in self.quick or done)
                     print(f"  [{c['name']} {args} -> {text}]")
                     self.history.append({"role": "tool", "tool_call_id": c["id"], "content": text})
                 if fresh is not None:
@@ -333,6 +386,8 @@ class RobotBrain:
             if nudged and self.history and self.history[-1].get("role") == "user":
                 self.history.pop()  # don't keep the nudge in the transcript
             tail = buf.strip()
+            if tail and _thinking_aloud(tail):
+                tail = ""
             if tail and spoken < limit:
                 yield tail
             elif not spoken and not tail:
@@ -361,11 +416,35 @@ class RobotBrain:
                 candidate = m.group(1).lower()
                 if candidate in config.EMOTIONS:
                     self.emotion = candidate
-                return _EMOTION_TAG.sub("", lead, count=1), True
+                    return _EMOTION_TAG.sub("", lead, count=1), True
+                if not config.TTS_ACTING:
+                    return _EMOTION_TAG.sub("", lead, count=1), True
+            if config.TTS_ACTING:
+                return self._take_acting_lead(lead, final)
             return buf, True
         if final or len(lead) > 24:
             return buf, True  # a "[" with no "]" in sight: not a tag
         return buf, False
+
+    def _take_acting_lead(self, lead: str, final: bool) -> tuple[str, bool]:
+        """A voice that acts (config.TTS_ACTING): the model sometimes puts a direction where the emotion tag goes.
+        "[excited, talking fast] Hah!" -> excited + "[talking fast] Hah!"; "[sighs] [sad] Oh." -> sad + "[sighs] Oh."
+        Anything else stays as written, for the voice to perform."""
+        m = re.match(r"\[([^\[\]]*)\]\s*", lead)
+        if not m:
+            return lead, True
+        first, _, rest = m.group(1).partition(",")
+        if first.strip().lower() in config.EMOTIONS:
+            self.emotion = first.strip().lower()
+            return (f"[{rest.strip()}] " if rest.strip() else "") + lead[m.end():], True
+        after = lead[m.end():]
+        if not after or (after.startswith("[") and "]" not in after):
+            return lead, final or len(lead) > 80      # the emotion tag may be next: wait for it
+        m2 = _EMOTION_TAG.match(after)
+        if m2 and m2.group(1).lower() in config.EMOTIONS:
+            self.emotion = m2.group(1).lower()
+            return lead[:m.end()] + after[m2.end():], True
+        return lead, True
 
     def _strip_images(self) -> None:
         """Replace old camera frames with a note. Keeping every image in the

@@ -35,9 +35,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import queue
-import re
 import secrets
 import sys
 import threading
@@ -47,6 +47,7 @@ import websockets
 
 from . import computer, config, faces, mouth, personality, settings
 from .body import Body
+from .dance import Dancer, length as dance_length
 from .thinking import Interrupted, RobotBrain
 from .ears import Ears, normalize, strip_wake_word
 from .eyes import Eyes, rotate_jpeg
@@ -54,6 +55,12 @@ from .perception import Perception
 from .tracker import Tracker
 
 robot_socket: websockets.ServerConnection | None = None
+robot_peer: str | None = None      # the connected robot's address, and when it last sent anything (it sends a
+robot_heard_at = 0.0               # heartbeat every 5 s, and mic audio and camera frames far more often)
+_greeting = 0                      # connections still saying hello (each may hold a message for up to 2 s)
+MAX_GREETING = 8
+MIN_TOKEN_LEN = 16
+_bad_token = asyncio.Lock()        # wrong tokens wait out their second one at a time, however many come at once
 brain: RobotBrain | None = None  # created in main() once the event loop exists
 ears: Ears | None = None
 # (text, when speech began, when it ended, when the transcript was ready)
@@ -83,6 +90,7 @@ current_emotion = "neutral"
 speaker_volume = 0.7        # mirrors firmware SPEAKER_VOLUME until changed here
 speaker_out = config.SPEAKER_OUT   # "robot" or "computer"; the live view can switch it
 thinking = False            # a reply is being composed (before it's spoken)
+roam_moving_until = 0.0     # the robot's own head moves (the "roam" idle screen): until then the camera is turning
 TUNABLE = {                 # config knobs the console may change live: (min, max)
     "VAD_THRESHOLD": (0.1, 0.95),
     "TURN_THRESHOLD": (0.1, 0.95),
@@ -98,10 +106,17 @@ VOICE_TUNABLE = {           # speaker tuning the console may change live (mouth.
 
 async def send_to_robot(payload: dict) -> bool:
     global current_emotion
-    if payload.get("type") == "emotion":
+    kind = payload.get("type")
+    if kind == "emotion":
         current_emotion = payload.get("name", current_emotion)
         if body is not None:
             body.feel(current_emotion)
+    # Where the head was last sent, whoever sent it (the dashboard's sliders, `look`, tracking, a dance, body
+    # language), for the dashboard: its sliders show this. Asleep, the robot centers the head itself.
+    if kind in ("pan", "tilt") and isinstance(payload.get("deg"), (int, float)):
+        eyes.tracking_info[kind] = payload["deg"]
+    elif kind == "asleep" and payload.get("on"):
+        eyes.tracking_info.update(pan=0.0, tilt=0.0)
     if robot_socket is None:
         print("(no robot connected — command not sent)")
         return False
@@ -110,53 +125,78 @@ async def send_to_robot(payload: dict) -> bool:
 
 
 def pick_mic_source() -> None:
-    """auto: the robot's mic while it's connected, the Mac's otherwise."""
+    """auto: the robot's mic while it's connected, the Mac's otherwise. A computer input that isn't plugged in
+    counts as auto until it is (Ears has the system default open meanwhile)."""
     if ears is None:
         return
-    if config.MIC_SOURCE == "auto":
+    mode = config.MIC_SOURCE
+    if mode == "mac" and ears.device_missing:
+        mode = "auto"
+    if mode == "auto":
         source = "robot" if robot_socket is not None else "mac"
     else:
-        source = config.MIC_SOURCE
+        source = mode
     if source != ears.source:
         ears.set_source(source)
         if source == "mac" and not ears.has_mac_mic:
             print(f"(no Mac mic: {ears.mac_error} — nothing is listening until the robot connects)")
         else:
-            print(f"listening through the {'robot' if source == 'robot' else 'Mac'} mic")
+            print("listening through the robot mic" if source == "robot" else f"listening through \"{ears.device_name}\"")
 
 
 async def handle_robot(websocket: websockets.ServerConnection) -> None:
-    global robot_socket
+    global robot_socket, roam_moving_until, robot_peer, robot_heard_at, _greeting
     peer = websocket.remote_address[0] if websocket.remote_address else "?"
     # Anyone on the WiFi can reach this port, so the first message must be a
     # hello carrying the shared token from server/.env. Anything else is
     # dropped without a reply.
+    if _greeting >= MAX_GREETING:      # a flood of connections that never say hello
+        await websocket.close(1013)
+        return
+    _greeting += 1
     try:
         first = await asyncio.wait_for(websocket.recv(), timeout=2)
-        hello = json.loads(first) if isinstance(first, str) else {}
+        # the robot's hello is ~100 bytes: anything big isn't one
+        hello = json.loads(first) if isinstance(first, str) and len(first) <= 4096 else {}
     except (asyncio.TimeoutError, json.JSONDecodeError, websockets.ConnectionClosed):
         hello = {}
+    finally:
+        _greeting -= 1
+        first = None
     if not isinstance(hello, dict):
         hello = {}  # "[1]", "42", "null" are valid JSON but not a hello
     expected = os.environ.get("ROBOT_TOKEN", "")
-    if not expected:
-        print("(refusing robot: set ROBOT_TOKEN in server/.env and firmware/include/secrets.h)")
+    if len(expected) < MIN_TOKEN_LEN or expected == "change-me":   # the example's placeholder: everyone knows it
+        print(f"(refusing robot: set ROBOT_TOKEN in server/.env and firmware/include/secrets.h to the same random "
+              f"string of at least {MIN_TOKEN_LEN} characters, e.g. from "
+              f"`python3 -c \"import secrets; print(secrets.token_hex(16))\"`)")
         await websocket.close(1008)
         return
     offered = str(hello.get("token", "")).encode()  # bytes: compare_digest rejects non-ASCII str
     if hello.get("type") != "hello" or not secrets.compare_digest(offered, expected.encode()):
         print(f"(refused a connection from {peer}: bad or missing token)")
+        async with _bad_token:   # a wrong token costs a second, one at a time: no rapid guessing in parallel
+            await asyncio.sleep(1)
         await websocket.close(1008)
         return
     if robot_socket is not None:
-        print(f"(refused a second robot from {peer}: one is already connected)")
-        await websocket.close(1013)
-        return
+        # The robot back after a reboot or a replug, before its old connection is noticed as dead (that takes up to
+        # ~40 s of missed pings). Refusing it left the robot retrying until then, so it takes over: if it comes from
+        # the same address, or the old link has gone quiet (a live robot sends something every few seconds).
+        # Anything else is a second robot (or someone else with the token) and is refused, as before.
+        if peer != robot_peer and time.time() - robot_heard_at < 8:
+            print(f"(refused a second robot from {peer}: one is already connected)")
+            await websocket.close(1013)
+            return
+        old = robot_socket
+        print(f"(robot reconnected from {peer}: dropping its old connection)")
+        robot_socket = None
+        asyncio.create_task(old.close(1012))
     robot_socket = websocket
+    robot_peer, robot_heard_at = peer, time.time()
     print(f"robot connected! (fw {hello.get('fw', '?')}, {peer})")
     pick_mic_source()
-    if config.MIC_SOURCE in ("auto", "robot"):
-        await send_to_robot({"type": "mic", "on": True})
+    await update_robot_mic()
     await send_to_robot({"type": "stream", "on": True, "fps": config.CAMERA_FPS, "size": config.CAMERA_STREAM_SIZE})
     # No idle head glances: they fight deliberate looks. The eyes still move.
     await send_to_robot({"type": "glance", "on": False})
@@ -168,6 +208,8 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
     await send_to_robot({"type": "asleep", "on": time.time() >= awake_until})
     try:
         async for message in websocket:
+            if robot_socket is websocket:
+                robot_heard_at = time.time()
             if isinstance(message, bytes):
                 kind = message[:1]
                 if kind == b"\x01" and ears is not None and len(message) % 2 == 1:
@@ -187,10 +229,22 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
                 continue  # heartbeat every 5 s; not worth the console space
             if event.get("type") == "speak_done":
                 robot_speak_done.set()
+                dry, rssi, nxt = (event.get(k) for k in ("dry_ms", "rssi", "next_ms"))
+                if isinstance(dry, int) and dry > 0:   # firmware 0.4.1+ says how it went
+                    num = lambda v: v if isinstance(v, int) else "?"   # numbers only into the log
+                    print(f"  (robot: the voice ran dry for {dry} ms; WiFi {num(rssi)} dBm; next reply "
+                          f"buffers {num(nxt)} ms first)")
+                continue
+            if event.get("type") == "head_moving":
+                # roaming: the robot moves its head itself. Hold the wave watch off while it turns, and a moment
+                # after (a stop message lost with the link can't leave it off for longer than 10 s)
+                roam_moving_until = time.time() + (10.0 if event.get("on") else 0.5)
                 continue
             if event.get("type") == "temp":
                 try:
-                    eyes.temperature = float(event.get("c"))
+                    c = float(event.get("c"))
+                    if math.isfinite(c):     # NaN would make /status invalid JSON
+                        eyes.temperature = c
                 except (TypeError, ValueError):
                     pass  # not a number; leave the last reading
                 continue
@@ -227,6 +281,9 @@ async def handle_console_line(line: str) -> bool:
     elif cmd in ("pan", "tilt"):
         try:
             deg = float(arg)
+            if not math.isfinite(deg):
+                raise ValueError("not a number")
+            deg = max(-180.0, min(180.0, deg))   # the robot clamps to its own limits; this keeps the JSON valid
             if body is not None:
                 body.stop()
             await send_to_robot({"type": cmd, "deg": deg})
@@ -270,10 +327,13 @@ async def handle_console_line(line: str) -> bool:
 
 # ── Rocky's abilities (called by the brain, from its worker thread) ──────────
 
-async def look(args: dict) -> tuple[str, bytes | None]:
+async def look(args: dict) -> tuple:
     """Move the head, wait for it to get there, and grab a fresh frame.
     Only the axis that was asked for moves: "left"/"right" pan, "up"/
-    "down"/"level" tilt, "center" both."""
+    "down"/"level" tilt, "center" both. see = false ("turn your head left", nothing asked about what's there): just
+    the move, no picture, and the reply ends with his line (he described the room after every head turn)."""
+    see = args.get("see", True)
+    see = see.strip().lower() != "false" if isinstance(see, str) else bool(see)
     pan = tracker.pan if tracker else 0.0
     tilt = tracker.tilt if tracker else 0.0
     move_pan = move_tilt = False
@@ -308,12 +368,19 @@ async def look(args: dict) -> tuple[str, bytes | None]:
             await send_to_robot({"type": "tilt", "deg": tilt})
         if tracker is not None:
             tracker.note_pose(pan=pan if move_pan else None, tilt=tilt if move_tilt else None)
+        if not see:
+            return (_head_now(pan, tilt) + " Moved only, as asked: no picture. Say where your head went, "
+                    "nothing about the room.", None, True)
         # Wait as long as the move really takes (the tracker runs a copy of the firmware's motion, body language
         # included), plus a moment for the command to arrive and the head to stop shaking, then take a sharp still
         # from the new angle.
         travel = tracker.arrival_in() if tracker is not None else 1.0
         await asyncio.sleep(travel + LOOK_SETTLE_S)
         jpeg = await best_picture(since=time.time() - 0.05, wait=1.5)
+    return (_head_now(pan, tilt) + (" Fresh camera image attached." if jpeg else " No camera image available."), jpeg)
+
+
+def _head_now(pan: float, tilt: float) -> str:
     pan_word = "left" if pan < -5 else "right" if pan > 5 else "center"
     if tilt <= config.TRACK_TILT_MIN + 0.5:
         tilt_word = "down, as far as it goes"
@@ -321,8 +388,7 @@ async def look(args: dict) -> tuple[str, bytes | None]:
         tilt_word = "up, as far as it goes"
     else:
         tilt_word = "down" if tilt < -5 else "up" if tilt > 5 else "level"
-    where = f"Head is now at pan {pan:.0f} deg ({pan_word}), tilt {tilt:.0f} deg ({tilt_word})."
-    return (where + (" Fresh camera image attached." if jpeg else " No camera image available."), jpeg)
+    return f"Head is now at pan {pan:.0f} deg ({pan_word}), tilt {tilt:.0f} deg ({tilt_word})."
 
 
 LOOK_SETTLE_S = 0.3  # after the head arrives: WiFi, servo lag, and the head settling before the picture
@@ -349,7 +415,7 @@ async def set_tracking(on: bool, announce: bool = True) -> tuple[str, bytes | No
         body.stop()   # the tracker owns the head now
     if not on and tracker.tracking:
         tracker.tracking = False
-        eyes.tracking_info = {"tracking": False, "pan": tracker.pan, "tilt": tracker.tilt}
+        eyes.tracking_info["tracking"] = False
     if announce:
         print(f"tracking {'on' if on else 'off'}")
     return ("now following the human's face" if on else "stopped following", None)
@@ -358,6 +424,8 @@ async def set_tracking(on: bool, announce: bool = True) -> tuple[str, bytes | No
 async def fall_asleep() -> None:
     """Everything that goes with sleep: face tracking off and the head back to center (the robot centers it on
     `asleep` and its servos go quiet once they settle there), then eyes shut and the clock screen."""
+    if dancer is not None:
+        dancer.stop()
     if body is not None:
         body.stop()
     if tracker is not None and tracker.enabled:
@@ -382,10 +450,43 @@ def _sync(coro_fn):
     return run
 
 
+dancer: Dancer | None = None  # created in main()
+
+
+def start_dance(name: str | None = None) -> str | None:
+    """One of his four routines, at random (or by name); it starts once his line is said. The routine's name, or
+    None with no robot to dance."""
+    global awake_until
+    if dancer is None or robot_socket is None:
+        return None
+    picked = dancer.start(name)
+    awake_until = max(awake_until, time.time() + dance_length(picked) + config.AWAKE_SECONDS)   # no dozing mid-dance
+    return picked
+
+
+async def dance() -> tuple:
+    """The `dance` ability. Done: nothing more for the model to say about it."""
+    picked = start_dance()
+    if picked is None:
+        return ("No body connected: can't dance right now.", None)
+    return (f"Dancing now ({picked}, about {dance_length(picked):.0f} s). Your line before it was enough: say nothing "
+            "more, and don't describe the dance.", None, True)
+
+
+async def _before_dancing() -> None:
+    """The dance has the head: body language stops, face tracking goes off, no held pose."""
+    if body is not None:
+        body.stop()
+    if tracker is not None and tracker.enabled:
+        await set_tracking(False, announce=False)
+    await set_head_held(False)
+
+
 main_loop: asyncio.AbstractEventLoop | None = None
 ABILITIES = {
     "look": _sync(look),
     "track_face": _sync(lambda args: set_tracking(bool(args.get("on", True)))),
+    "dance": _sync(lambda args: dance()),
     # the computer abilities (computer.py) are plain functions: no event loop, nothing sent to the robot
     **{name: (lambda fn: lambda args: (fn(args), None))(fn) for name, fn in computer.ACTIONS.items()},
 }
@@ -399,13 +500,16 @@ _TUNE_SECTION = {"VAD_THRESHOLD": "listening", "TURN_THRESHOLD": "listening", "T
 
 
 def apply_settings(s: dict) -> None:
-    """Make the brain match the settings file (everything except your name, which needs a restart)."""
+    """Make the brain match the settings file (everything except your name, which needs a restart). The mic
+    choice is taken here; reload_settings() switches the mic itself."""
     global current_settings, speaker_volume, speaker_out
     current_settings = s
     r = s["rocky"]
     config.AWAKE_SECONDS = r["awake_seconds"]
     speaker_volume = r["volume"]
     speaker_out = r["speaker_out"]
+    config.MIC_SOURCE = {"computer": "mac"}.get(r["mic"], r["mic"])
+    config.MIC_DEVICE = r["mic_device"] or os.environ.get("MIC_DEVICE") or None
     config.CAMERA_ROTATE = r["camera_rotate"]
     config.BODY_LANGUAGE = r["body_language"]
     v = s["vision"]
@@ -417,7 +521,6 @@ def apply_settings(s: dict) -> None:
     config.CAMERA_STREAM_SIZE = v["stream"]
     if perception is not None:
         perception.enabled = config.PERCEPTION
-        perception.set_words(re.split(r"[,\n]", v["words"]))
     for sec in ("listening", "voice"):
         for key, value in s[sec].items():
             if value is not None:
@@ -438,11 +541,46 @@ def persist(section: str, key: str, value) -> None:
 async def reload_settings() -> None:
     """The launcher saved the settings file: apply it and send the robot its part."""
     apply_settings(settings.load())
+    await switch_mic()
     await send_to_robot(settings.robot_payload(current_settings))
     await send_face_pack()
     await send_to_robot({"type": "volume", "level": speaker_volume})
     await send_to_robot({"type": "stream", "on": True, "fps": config.CAMERA_FPS, "size": config.CAMERA_STREAM_SIZE})
     print("settings: reloaded from settings.json")
+
+
+async def switch_mic() -> None:
+    """Open the computer input the settings name (if it changed), pick robot or computer, and tell the robot
+    whether to stream its mic."""
+    if ears is not None and ears.device != config.MIC_DEVICE:
+        name = await asyncio.get_running_loop().run_in_executor(None, ears.set_device, config.MIC_DEVICE)
+        print(f"computer mic: \"{name}\"" + (f" (\"{ears.device_missing}\" isn't plugged in: using the default "
+                                              f"until it is)" if ears.device_missing else ""))
+    pick_mic_source()
+    await update_robot_mic()
+
+
+async def update_robot_mic() -> None:
+    """The robot streams its mic only while it's the one being listened to (it's WiFi and heat for nothing
+    otherwise). Listening off: whatever the setting allows, so `listen` finds it running."""
+    if robot_socket is None:
+        return
+    on = ears.source == "robot" if ears is not None else config.MIC_SOURCE in ("auto", "robot")
+    await send_to_robot({"type": "mic", "on": on})
+
+
+async def mic_watch() -> None:
+    """A chosen computer input that wasn't plugged in: look for it again every 10 s (between turns: reopening
+    drops a moment of sound), and switch to it once it's there."""
+    while True:
+        await asyncio.sleep(10)
+        if ears is None or not ears.device_missing or ears.hearing or ears.transcribing:
+            continue
+        await asyncio.get_running_loop().run_in_executor(None, ears.set_device, ears.device)
+        if not ears.device_missing:
+            print(f"computer mic: \"{ears.device_name}\" is plugged in now")
+            pick_mic_source()
+            await update_robot_mic()
 
 
 async def send_face_pack() -> None:
@@ -452,9 +590,9 @@ async def send_face_pack() -> None:
 
 
 def wants_camera(question: str) -> bool:
-    """Does the question sound like it's about what Rocky can see?"""
+    """Does the question sound like it's about what Rocky can see? (config.CAMERA_WORDS, as whole words)"""
     q = " " + normalize(question) + " "
-    return any(f" {w} " in q or (" " in w and w in q) for w in config.CAMERA_WORDS)
+    return any(f" {w} " in q for w in config.CAMERA_WORDS)
 
 
 # ── Speaking ─────────────────────────────────────────────────────────────────
@@ -589,7 +727,7 @@ class SpokenReply:
                     break
                 if not self.spoken:
                     self.tl.mark("first sentence")
-                self.spoken.append(sentence)
+                self.spoken.append(mouth.without_cues(sentence))   # the page shows his words, not voice directions
                 print(f"{config.ROBOT_NAME} [{brain.emotion}]: {sentence}")
                 self.sentences.put(sentence)
         except Interrupted:
@@ -605,7 +743,7 @@ class SpokenReply:
             while (sentence := self.sentences.get()) is not None:
                 if self.cancel.is_set():
                     continue
-                self.track.begin(sentence)
+                self.track.begin(mouth.without_cues(sentence))
                 for chunk in mouth.stream(sentence, self.leveler):
                     if self.cancel.is_set():
                         break
@@ -653,6 +791,7 @@ class SpokenReply:
         finally:
             if self.text:
                 eyes.last_said = self.text   # before the live track goes, so the page never flicks back
+                computer.controller.said(self.text)   # a shortcut's "Run X?" only counts if X was said
             speech_now = None
             if body is not None:
                 body.quiet()
@@ -815,31 +954,18 @@ def speaking_now() -> bool:
 
 
 async def gesture_seen(name: str) -> None:
-    """A gesture from perception: a wave wakes him; thumbs up / down show on his face for a moment."""
+    """A wave from perception, while he's asleep, wakes him (the only gesture that does anything)."""
     global awake_until
-    if not config.GESTURE_REACTIONS or robot_socket is None or thinking or speaking_now():
+    if not config.GESTURE_REACTIONS or name != "wave" or robot_socket is None or thinking or speaking_now():
         return
-    asleep = time.time() >= awake_until
-    if name == "wave":
-        if asleep:
-            print(f"(saw a wave — {config.ROBOT_NAME} wakes up)")
-            awake_until = time.time() + config.AWAKE_SECONDS
-            await wake_up()
-            await send_to_robot({"type": "emotion", "name": "surprised"})
-            await say(personality.LINES["wake"])
-            awake_until = time.time() + config.AWAKE_SECONDS
-        else:
-            await flash_emotion("happy")
-    elif not asleep and name in ("thumbs up", "thumbs down"):
-        print(f"(saw a {name})")
-        await flash_emotion("happy" if name == "thumbs up" else "sad")
-
-
-async def flash_emotion(name: str, seconds: float = 3.0) -> None:
-    await send_to_robot({"type": "emotion", "name": name})
-    await asyncio.sleep(seconds)
-    if current_emotion == name and not thinking and not speaking_now() and time.time() < awake_until:
-        await send_to_robot({"type": "emotion", "name": "neutral"})
+    if time.time() < awake_until:
+        return   # awake already: nothing to do
+    print(f"(saw a wave — {config.ROBOT_NAME} wakes up)")
+    awake_until = time.time() + config.AWAKE_SECONDS
+    await wake_up()
+    await send_to_robot({"type": "emotion", "name": "surprised"})
+    await say(personality.LINES["wake"])
+    awake_until = time.time() + config.AWAKE_SECONDS
 
 
 async def converse(question: str, ended_at: float | None = None, heard_at: float | None = None) -> bool:
@@ -847,7 +973,7 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
     Returns False if the human started talking again before Rocky spoke
     (the reply was dropped and the question is still open)."""
     global awake_until
-    computer.controller.new_turn()
+    computer.controller.new_turn(question)
     loop = asyncio.get_running_loop()
     tl = Timeline(ended_at or time.time())
     if heard_at is not None:
@@ -867,7 +993,10 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
         tl.mark("picture")
     if camera_wanted and jpeg is None:
         print("  (camera has no fresh frame — telling him he can't see right now)")
-    notes = perception.describe() if perception is not None and config.PERCEPTION else ""
+    # The face detector's note, only next to a picture (a question about seeing, or one along for context): with
+    # other questions it only invited him to talk about how you look in answers that had nothing to do with it.
+    notes = perception.describe() \
+        if perception is not None and config.PERCEPTION and (camera_wanted or jpeg is not None) else ""
     if notes:
         print("  " + notes)
     reply = SpokenReply(loop, tl)
@@ -952,9 +1081,13 @@ def console_state() -> dict:
         "robot": robot_socket is not None,
         "listening": ears is not None,
         "mic": ears.source if ears is not None else None,
+        "mic_device": ears.device_name if ears is not None and ears.has_mac_mic else None,
+        "mic_missing": ears.device_missing if ears is not None else None,
         "level": ears.level if ears is not None else 0.0,
         "speech_prob": ears.speech_prob if ears is not None else 0.0,
         "hearing": ears.hearing if ears is not None else False,
+        # the dashboard strip's bar: the whole last quarter second, not just its newest 32 ms
+        **dict(zip(("level_recent", "speech_recent", "voice_recent"), ears.recent() if ears is not None else (0.0, 0.0, False))),
         "speaking": ears.muted.is_set() if ears is not None else False,
         "thinking": thinking,
         "awake": now < awake_until,
@@ -1049,6 +1182,17 @@ async def _console_command(action: str, payload: dict) -> dict:
         await send_to_robot({"type": "emotion", "name": name})
         if body is not None:
             body.test(name)
+    elif action == "dance":
+        # the dashboard's Dance button (a routine at random, or {"name": ...}); wakes him if he's asleep
+        if time.time() >= awake_until:
+            await wake_up()
+            await send_to_robot({"type": "emotion", "name": "happy"})
+        awake_until = max(awake_until, time.time() + config.AWAKE_SECONDS)
+        name = payload.get("name")
+        picked = start_dance(name if isinstance(name, str) else None)
+        if picked is None:
+            raise ValueError("the robot isn't connected")
+        return {"dance": picked}
     elif action == "volume":
         await set_volume(_number(payload, "level", 0.0, 1.0))
     elif action == "speaker_out":
@@ -1156,6 +1300,7 @@ async def start_listening() -> None:
                 ),
                 on_speech_start=lambda: loop.call_soon_threadsafe(speech_began),
                 on_turn_end=lambda: loop.call_soon_threadsafe(turn_ended),
+                device=config.MIC_DEVICE,
             ),
         )
         mic = await loop.run_in_executor(None, ears.start)
@@ -1171,7 +1316,10 @@ async def start_listening() -> None:
         print("  plug the interface in, or allow the Terminal to use the microphone")
     else:
         print(f"listening on \"{mic}\" — say \"hey {config.ROBOT_NAME}\"")
+    if ears.device_missing:
+        print(f"(\"{ears.device_missing}\" isn't plugged in: listening on the default input until it is)")
     pick_mic_source()
+    await update_robot_mic()
 
 
 def stop_listening() -> None:
@@ -1196,7 +1344,7 @@ async def head_loop() -> None:
             await send_to_robot({"type": "pan", "deg": pan})
         if tilt is not None:
             await send_to_robot({"type": "tilt", "deg": tilt})
-        eyes.tracking_info = {"tracking": tracking, "pan": pan, "tilt": tilt}
+        eyes.tracking_info["tracking"] = tracking
 
 
 async def doze_loop() -> None:
@@ -1331,30 +1479,37 @@ async def main() -> None:
           f"dashboard on :8766 adds settings and a Start button)")
     if not os.environ.get("ROBOT_TOKEN"):
         print("WARNING: ROBOT_TOKEN is not set in server/.env — the robot will be refused")
-    global tracker, brain, main_loop, perception, body
+    global tracker, brain, main_loop, perception, body, dancer
     apply_settings(settings.load())
     loop = asyncio.get_running_loop()
     main_loop = loop
     brain = RobotBrain(ABILITIES, extra_tools=lambda: computer.tools(computer.controller), quick=computer.QUICK)
     tracker = Tracker(eyes, lambda p, t, on: loop.call_soon_threadsafe(head_moves.put_nowait, (p, t, on)))
     body = Body(send_to_robot, tracker)
+    dancer = Dancer(send_to_robot, tracker)
+    dancer.ready = lambda: not thinking and not speaking_now()
+    dancer.before = _before_dancing
     body.allowed = lambda: (robot_socket is not None and time.time() < awake_until and not tracker.enabled
-                            and current_emotion != "sleepy")
+                            and current_emotion != "sleepy" and not dancer.dancing)
     eyes.has_annotator = True
     perception = Perception(eyes, lambda name: asyncio.run_coroutine_threadsafe(gesture_seen(name), loop))
     perception.awake = lambda: time.time() < awake_until
-    perception.paused = lambda: (ears is not None and ears.transcribing) or body.moving()   # (moving: blur, fake waves)
+    perception.paused = lambda: ((ears is not None and ears.transcribing) or body.moving()   # (moving: blur, fake waves)
+                                 or time.time() < roam_moving_until or dancer.dancing)
     perception.enabled = config.PERCEPTION
-    perception.set_words(re.split(r"[,\n]", current_settings["vision"]["words"]))
     tracker.perception = perception   # its boxes go on the live view
     perception.start()
     tracker.start()
     print("face tracking:", "on" if config.TRACKING else f"off — say \"{config.ROBOT_NAME}, track me\" or type `track on`")
     print("type `ask <question>` to talk to the brain right now\n")
-    async with websockets.serve(handle_robot, "0.0.0.0", config.PORT, max_size=1024 * 1024):  # snapshots ~40-300 KB
+    # The robot's WebSocket library always sends "Origin: file://"; a browser always sends its page's origin.
+    # Accepting only that (or none) keeps web pages from connecting and posing as the robot.
+    async with websockets.serve(handle_robot, "0.0.0.0", config.PORT, max_size=1024 * 1024,  # snapshots ~40-300 KB
+                                origins=["file://", None]):
         voice_task = asyncio.create_task(voice_loop())
         doze_task = asyncio.create_task(doze_loop())
         head_task = asyncio.create_task(head_loop())
+        mic_task = asyncio.create_task(mic_watch())
         if config.LISTEN_ON_START:
             await start_listening()
         try:
@@ -1363,6 +1518,7 @@ async def main() -> None:
             voice_task.cancel()
             doze_task.cancel()
             head_task.cancel()
+            mic_task.cancel()
             if ears is not None:
                 stop_listening()
 

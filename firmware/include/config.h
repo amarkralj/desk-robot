@@ -2,7 +2,7 @@
 
 // desk-robot firmware for the V2 robot: printed pan/tilt neck (38/30 geared pan), 2.42" SSD1309 face, camera on
 // its side in the head, Dayton CE32A-8 speaker. V1 (Adafruit bracket, 1.3" SH1106) is the v1.0 tag.
-#define FW_VERSION "0.4.0"
+#define FW_VERSION "0.4.1"
 
 // ─── Pin map (XIAO ESP32S3 Sense) ────────────────────────────────────────────
 // Silkscreen label → GPIO number. The camera and PDM mic on the Sense

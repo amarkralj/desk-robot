@@ -1,7 +1,7 @@
 {
-  "name": "Rocky",
+  "name": "Default",
   "author": "desk-robot",
-  "description": "Rocky's own face: soft rounded eyes with a glint.",
+  "description": "The default face: soft rounded eyes with pupils that look around.",
   "gap": 16,
   "y": 0,
   "cyclops": false,

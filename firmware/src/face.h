@@ -7,7 +7,7 @@
 //
 // A pack gives every emotion a shape for each eye (size, corner rounding, slanted edges, eyelids, cheeks) and a
 // set of flourishes (blush, tears, hearts, "?"...). The face morphs smoothly from one shape to the next and adds
-// life on top: blinks, glances, a glint in each eye, a mouth that moves with the speaker's audio, and a sleep
+// life on top: blinks, glances, pupils that look around, a mouth that moves with the speaker's audio, and a sleep
 // state with slow breathing and floating Z's.
 //
 // Packs come from the brain (server/faces/*.json, picked in the dashboard) and are kept in flash. Every pixel is
@@ -74,7 +74,7 @@ struct FacePack {
   float y = 0;              // eye height: + = lower
   bool cyclops = false;     // one eye in the middle (the left eye's shape)
   bool outline = false;     // eyes drawn as outlines instead of solid
-  bool glint = true;        // a dark reflection square in each eye
+  bool glint = true;        // a pupil in each eye (dark, with a highlight) that looks around on its own
   uint8_t mouth = 0;        // 0 = only while talking, 1 = always (a resting smile), 2 = never
   EmotionLook looks[static_cast<int>(Emotion::COUNT)];
   EyeShape asleep;          // the shut eyes while sleeping
@@ -93,6 +93,11 @@ class Face {
   // Asleep: eyes shut, breathing, Z's. Overrides the emotion while on.
   void setAsleep(bool on);
   bool asleep() const { return asleep_; }
+  // Roaming (the "roam" idle screen): asleep as far as everything else goes, but drawn awake with the neutral face,
+  // looking around as the head moves.
+  void setRoaming(bool on);
+  // Eyes lead the head: pupils (and the eyes a little) toward x, y (-1..1, + = screen right / down), held holdMs.
+  void lookToward(float x, float y, uint32_t holdMs);
 
   // Talking: draws a mouth that opens with `level` (0..1, the speaker's
   // current loudness). Call every frame while audio plays.
@@ -121,6 +126,8 @@ class Face {
     float x = 0, y = 0, age = 0;
   };
 
+  bool sleepLook() const { return asleep_ && !roaming_; }        // eyes shut, breathing, Z's
+  Emotion shown() const { return roaming_ ? Emotion::Neutral : emotion_; }
   void stepAnimation(uint32_t nowMs);
   void render();
   void drawEye(const EyeShape& e, float cx, float cy, int inner, float hScale);
@@ -141,6 +148,7 @@ class Face {
   EyeShape curL_, curR_;
   uint32_t emotionSinceMs_ = 0;
   bool still_ = false;
+  bool roaming_ = false;
 
   // Blink state: 0 = open, 1 = fully closed.
   float blinkAmount_ = 0.0f;
@@ -151,6 +159,12 @@ class Face {
   float gazeX_ = 0, gazeY_ = 0;
   float gazeTargetX_ = 0, gazeTargetY_ = 0;
   uint32_t nextSaccadeMs_ = 0;
+
+  // Pupils (packs with `glint`): where they look inside the eye, -1..1 of the room they have, eased toward the
+  // target. They dart about on their own, more often than the whole eye glances, as if he's looking at things.
+  float pupilX_ = 0, pupilY_ = 0;
+  float pupilTargetX_ = 0, pupilTargetY_ = 0;
+  uint32_t nextPupilMs_ = 0;
 
   // Flourish state.
   float pop_ = 0.0f;            // overshoot on emotion change, decays to 0

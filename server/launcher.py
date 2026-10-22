@@ -31,7 +31,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from brain import config, faces, settings  # noqa: E402  (all standard-library only)
+# The environment as this was started, before brain.config copies server/.env into it. Each brain gets this one,
+# so it reads .env itself, fresh: with the copy, a key changed in .env stayed the old one until the launcher restarted.
+LAUNCH_ENV = dict(os.environ)
+from brain import characters, config, faces, settings  # noqa: E402  (all standard-library only)
 
 PORT = int(os.environ.get("ROCKY_DASHBOARD_PORT", "8766"))
 BIND = "127.0.0.1"
@@ -47,6 +50,18 @@ def brain_python() -> str:
             return str(cand)
     return sys.executable
 
+
+# Prints this computer's audio inputs as JSON: {"mics": [{"name", "default"}], "error"?}
+MIC_LIST = """
+import json
+try:
+    import sounddevice as sd
+    d = sd.default.device[0]
+    mics = [{"name": x["name"], "default": i == d} for i, x in enumerate(sd.query_devices()) if x["max_input_channels"] > 0]
+    print(json.dumps({"mics": mics}))
+except Exception as e:
+    print(json.dumps({"mics": [], "error": str(e)}))
+"""
 
 IGNORED = "(heard, ignoring:"   # main.py's line for speech that wasn't meant for Rocky
 
@@ -91,7 +106,7 @@ class Brain:
             return "already running"
         if self.external():
             return "a brain started elsewhere is already running"
-        env = dict(os.environ, PYTHONUNBUFFERED="1")
+        env = dict(LAUNCH_ENV, PYTHONUNBUFFERED="1")
         self.log("── launcher: starting the server ──")
         self.proc = subprocess.Popen(
             [brain_python(), "-u", "-m", "brain.main"], cwd=HERE, env=env, text=True, bufsize=1,
@@ -176,17 +191,37 @@ def schema_meta() -> dict:
     return out
 
 
-def spotify_key_set() -> bool:
-    """Whether server/.env has a Spotify key (read fresh, so the page notices one added while this runs)."""
-    found = {}
+def env_value(key: str) -> str:
+    """A key from server/.env, read fresh (so one added while this runs counts), else from the environment this was
+    started in (exported in the shell); "" if neither has it."""
+    found = ""
     try:
         for line in config._ENV_FILE.read_text().splitlines():
             k, sep, v = line.partition("=")
-            if sep and k.strip() in ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"):
-                found[k.strip()] = v.strip().strip('"').strip("'")
+            if sep and k.strip() == key:
+                found = v.strip().strip('"').strip("'")
     except OSError:
         pass
-    return bool(found.get("SPOTIFY_CLIENT_ID") and found.get("SPOTIFY_CLIENT_SECRET"))
+    return LAUNCH_ENV.get(key) or found
+
+
+def spotify_key_set() -> bool:
+    """Whether server/.env has a Spotify key (read fresh, so the page notices one added while this runs)."""
+    return bool(env_value("SPOTIFY_CLIENT_ID") and env_value("SPOTIFY_CLIENT_SECRET"))
+
+
+def active_name() -> str:
+    return characters.name_of(settings.load()["character"]["id"])
+
+
+def restart_brain() -> bool:
+    """Restart a brain we started, so it picks up a new character. False if it isn't running here."""
+    if not brain.running():
+        return False
+    brain.stop()
+    time.sleep(0.5)
+    brain.start()
+    return True
 
 
 def reload_brain() -> bool:
@@ -223,6 +258,13 @@ class Handler(BaseHTTPRequestHandler):
         if host not in LOCAL_HOSTS:
             self._json(403, {"error": "forbidden"})
             return False
+        # Another site's page can still make the browser fetch our URLs (an <img> pointed at /launcher/mics
+        # starts a process each time). Opening the dashboard from a link is fine; anything else from another
+        # site isn't.
+        if (self.headers.get("Sec-Fetch-Site") == "cross-site"
+                and self.headers.get("Sec-Fetch-Dest", "document") != "document"):
+            self._json(403, {"error": "forbidden"})
+            return False
         return True
 
     def _console(self) -> bool:
@@ -248,6 +290,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")                          # no framing (clickjacking)
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -262,12 +306,13 @@ class Handler(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(url.query)
         if url.path == "/":
             try:
-                page = PAGE.read_text().replace("{name}", config.ROBOT_NAME).encode()
+                page = PAGE.read_text().replace("{name}", active_name()).encode()
             except OSError as e:
                 return self._reply(500, "text/plain", f"dashboard page missing: {e}".encode())
             return self._reply(200, "text/html; charset=utf-8", page)
         if url.path == "/launcher/state":
-            return self._json(200, brain.state())
+            # with the active personality's name, so an open page follows a switch or a rename without a reload
+            return self._json(200, {**brain.state(), "name": active_name()})
         if url.path == "/launcher/log":
             try:
                 after = int((q.get("after") or ["0"])[0])
@@ -283,6 +328,10 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/launcher/faces":
             return self._json(200, {"packs": faces.list_packs(), "active": settings.load()["face"]["pack"],
                                     "emotions": faces.EMOTIONS, "fx": faces.FX})
+        if url.path == "/launcher/characters":
+            return self._json(200, {"characters": characters.list_all(), "active": settings.load()["character"]["id"],
+                                    "emotions": faces.EMOTIONS, "acting_models": list(characters.ACTING_MODELS),
+                                    "external": brain.external()})
         if url.path == "/launcher/geocode":
             try:
                 return self._json(200, {"results": settings.geocode((q.get("q") or [""])[0])})
@@ -297,6 +346,14 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, subprocess.SubprocessError) as e:
                 return self._json(502, {"error": f"couldn't list your shortcuts: {e}"})
             return self._json(200, {"shortcuts": [n.strip() for n in out.splitlines() if n.strip()][:200]})
+        if url.path == "/launcher/mics":
+            # this computer's inputs, for the mic picker. Asked in a fresh process (the brain's Python, which has
+            # sounddevice): PortAudio only looks for devices when it starts, so this also finds one just plugged in
+            try:
+                out = subprocess.run([brain_python(), "-c", MIC_LIST], capture_output=True, text=True, timeout=15)
+                return self._json(200, json.loads(out.stdout))
+            except (OSError, subprocess.SubprocessError, ValueError) as e:
+                return self._json(200, {"mics": [], "error": f"couldn't list this computer's mics: {e}"})
         if url.path in ("/status", "/frame", "/stream"):
             return self._proxy_get(url.path)
         self._json(404, {"error": "not found"})
@@ -322,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "settings": new, "applied_live": reload_brain()})
             if path == "/launcher/faces/save":
                 body = self._body()
-                pack_id = faces.save_custom(body.get("pack"), body.get("id") or None)
+                pack_id = faces.save_custom(body.get("pack"), str(body.get("id") or "") or None)
                 live = settings.load()["face"]["pack"] == pack_id and reload_brain()
                 return self._json(200, {"ok": True, "id": pack_id, "applied_live": live})
             if path == "/launcher/faces/delete":
@@ -332,12 +389,47 @@ class Handler(BaseHTTPRequestHandler):
                     settings.update({"face": {"pack": faces.DEFAULT_PACK}})
                     reload_brain()
                 return self._json(200, {"ok": True})
+            if path == "/launcher/characters/save":
+                body = self._body()
+                cid = characters.save(body.get("character"), str(body.get("id") or "") or None)
+                restarted = settings.load()["character"]["id"] == cid and restart_brain()
+                return self._json(200, {"ok": True, "id": cid, "restarted": restarted, "name": active_name()})
+            if path == "/launcher/characters/use":
+                cid = str(self._body().get("id") or "")
+                if cid != characters.DEFAULT:
+                    characters.load(cid)     # raises if it's missing or broken: don't switch to Rocky by accident
+                settings.update({"character": {"id": cid}})
+                return self._json(200, {"ok": True, "restarted": restart_brain(), "external": brain.external(),
+                                        "name": active_name()})
+            if path == "/launcher/characters/delete":
+                cid = str(self._body().get("id") or "")
+                characters.delete(cid)
+                restarted = False
+                if settings.load()["character"]["id"] == cid:
+                    settings.update({"character": {"id": characters.DEFAULT}})
+                    restarted = restart_brain()
+                return self._json(200, {"ok": True, "restarted": restarted, "name": active_name()})
+            if path == "/launcher/characters/draft":
+                # the language model writes the character from a short description (takes 10-30 s)
+                body = self._body()
+                out = characters.draft(
+                    str(body.get("name") or ""), str(body.get("description") or ""),
+                    body.get("tts_model") in characters.ACTING_MODELS, faces.EMOTIONS,
+                    base_url=env_value("LLM_BASE_URL") or "https://openrouter.ai/api/v1",
+                    model=env_value("LLM_MODEL") or config.MODEL, api_key=env_value("LLM_API_KEY"))
+                return self._json(200, {"ok": True, "draft": out})
+            if path == "/launcher/characters/voice":
+                # a sample of a Fish voice as MP3, played by the page (works with the server stopped)
+                body = self._body()
+                audio = characters.voice_sample(str(body.get("voice_id") or ""), str(body.get("tts_model") or ""),
+                                                str(body.get("text") or ""), env_value("FISH_AUDIO_API_KEY"))
+                return self._reply(200, "audio/mpeg", audio)
             if path.startswith("/api/"):
                 return self._proxy_post(path)
         except ValueError as e:
             return self._json(400, {"error": str(e)})
-        except json.JSONDecodeError as e:
-            return self._json(400, {"error": f"bad request: {e}"})
+        except (RecursionError, TypeError, AttributeError) as e:     # absurdly nested JSON, wrong value types
+            return self._json(400, {"error": f"bad request: {type(e).__name__}"})
         self._json(404, {"error": "no such control"})
 
     # ── passing the live parts through to the brain ──

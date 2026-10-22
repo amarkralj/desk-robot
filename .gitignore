@@ -24,6 +24,9 @@ server/models/siglip_*
 # Face packs made in the dashboard (export one to share it)
 server/faces/custom/
 
+# Personalities made in the dashboard (export one to share it)
+server/characters/
+
 # macOS and editors
 .DS_Store
 .vscode/

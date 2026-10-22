@@ -348,6 +348,13 @@
   textarea { font: 14px var(--body); color: var(--ink); background: var(--well); border: 1px solid var(--line-strong); border-radius: 3px;
              padding: 8px 10px; width: 100%; resize: vertical; }
 
+  /* ── personalities ──────────────────────────────────────────────────── */
+  .charform { margin-top: 6px; }
+  .charform .grid2 { gap: 8px 28px; }
+  .charform .lines { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .charform .lines label { display: grid; gap: 4px; font: 12px var(--body); color: var(--muted); }
+  .hint.warn { color: var(--astro); }
+
   /* ── log ────────────────────────────────────────────────────────────── */
   .log { position: relative; height: min(62vh, 640px); overflow: auto; margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 4px;
          background: repeating-linear-gradient(0deg, rgba(255,255,255,.015) 0 1px, transparent 1px 3px), #05070b;
@@ -543,7 +550,7 @@
       <div class="bezel dozing" id="bezel"><canvas id="avatar" width="128" height="64" role="img" aria-label="the robot's face right now"></canvas></div>
       <div>
         <div class="eyebrow">desk unit · <span id="clock">--:--:--</span> local</div>
-        <h1>{name}</h1>
+        <h1><span data-robot-name>{name}</span></h1>
         <div class="mood" id="mood"><span class="off">—</span></div>
       </div>
     </div>
@@ -568,6 +575,7 @@
     <span class="tabglow" id="tabglow" aria-hidden="true"></span>
     <button type="button" role="tab" id="t-live" aria-controls="p-live" aria-selected="true">Live</button>
     <button type="button" role="tab" id="t-settings" aria-controls="p-settings" aria-selected="false" tabindex="-1">Settings</button>
+    <button type="button" role="tab" id="t-chars" aria-controls="p-chars" aria-selected="false" tabindex="-1">Personalities</button>
     <button type="button" role="tab" id="t-faces" aria-controls="p-faces" aria-selected="false" tabindex="-1">Faces</button>
     <button type="button" role="tab" id="t-log" aria-controls="p-log" aria-selected="false" tabindex="-1">Log</button>
   </nav>
@@ -577,12 +585,12 @@
     <div class="card stopped" id="stoppednote" hidden>
       <canvas id="sleepface" width="128" height="64" aria-hidden="true"></canvas>
       <h2>The server is stopped</h2>
-      <p>{name} shows the clock on his screen, but he can't hear, see or talk until the server runs. Settings still work.</p>
+      <p><span data-robot-name>{name}</span> shows the clock on his screen, but he can't hear, see or talk until the server runs. Settings still work.</p>
       <button type="button" class="primary" id="startbtn2">Start server</button>
     </div>
     <div class="deck" id="livedeck">
       <section aria-labelledby="l-sees">
-        <h2 class="label" id="l-sees"><span>{name} sees</span><span class="sub"><span id="framenote"></span>
+        <h2 class="label" id="l-sees"><span><span data-robot-name>{name}</span> sees</span><span class="sub"><span id="framenote"></span>
           <button type="button" id="rotbtn" title="turn the camera picture 90 degrees clockwise" style="margin-left:10px;padding:5px 11px">Rotate ↻ <span id="rotv">—</span></button></span></h2>
         <div class="viewport dark" id="viewport">
           <img id="cam" alt="what the robot's camera sees">
@@ -595,20 +603,19 @@
           <div class="nocam">No picture yet.<br>The robot's camera streams once it connects.</div>
         </div>
         <div class="card" style="margin-top:16px">
-          <h2 class="label"><span>{name} hears</span><span class="sonar-state" id="hearstate">—</span></h2>
+          <h2 class="label"><span><span data-robot-name>{name}</span> hears</span><span class="sonar-state" id="hearstate">—</span></h2>
           <div class="sonar"><canvas id="wave" aria-hidden="true"></canvas></div>
-          <p class="hint">Last 8 seconds of sound. Gold bars are speech, red is his own voice.</p>
+          <p class="hint">Last 8 seconds of sound. Gold bars are where he heard a voice, grey is other sound (taller = louder), red is his own voice.</p>
           <div class="chat">
             <p class="line"><span class="who">You</span><span class="text" id="heard"></span></p>
-            <p class="line said" id="saidline"><span class="who">{name}</span><span class="text" id="said"></span></p>
+            <p class="line said" id="saidline"><span class="who"><span data-robot-name>{name}</span></span><span class="text" id="said"></span></p>
           </div>
         </div>
         <div class="card" style="margin-top:16px">
-          <h2 class="label"><span>{name} notices</span><span class="sonar-state" id="noticestate">—</span></h2>
+          <h2 class="label"><span><span data-robot-name>{name}</span> notices</span><span class="sonar-state" id="noticestate">—</span></h2>
           <p class="line"><span class="who">People</span><span class="text" id="nperson"></span></p>
           <p class="line"><span class="who">Hands</span><span class="text" id="nhands"></span></p>
-          <p class="line"><span class="who">Things</span><span class="text" id="nthings"></span></p>
-          <p class="hint">From small models on this computer, a few times a second. Boxes on the camera view show what they find.</p>
+          <p class="hint">From two small models on this computer, a few times a second: faces, and hands for a wave. Boxes on the camera view show what they find. What's in the room he reads from the picture when you ask.</p>
         </div>
       </section>
 
@@ -620,7 +627,7 @@
         <div class="card">
           <h2 class="label"><span>Talk</span></h2>
           <form class="row" id="sayform">
-            <label for="saytext" class="visually-hidden">Words for {name}</label>
+            <label for="saytext" class="visually-hidden">Words for <span data-robot-name>{name}</span></label>
             <input type="text" id="saytext" name="text" placeholder="Words for {name}…" maxlength="300" autocomplete="off">
             <button type="submit">Say it</button>
             <button type="button" class="primary" id="askbtn">Ask him</button>
@@ -634,6 +641,7 @@
           <div class="row">
             <button type="button" id="centerbtn">Center and relax</button>
             <button type="button" id="trackbtn">Follow my face</button>
+            <button type="button" id="dancebtn">Dance</button>
           </div>
         </div>
         <div class="card">
@@ -656,7 +664,7 @@
       <div class="stack">
         <fieldset class="card">
           <legend class="label"><span>Clock screen</span><span class="saved" data-saved="clock"></span></legend>
-          <p class="hint" style="margin:-6px 0 6px">What {name}'s screen shows while he sleeps.</p>
+          <p class="hint" style="margin:-6px 0 6px">What <span data-robot-name>{name}</span>'s screen shows while he sleeps.</p>
           <fieldset class="set"><legend class="k">Time</legend>
             <div class="choices"><label><input type="radio" name="clock.hour_format" value="12"> 12-hour (8:26 PM)</label>
               <label><input type="radio" name="clock.hour_format" value="24"> 24-hour (20:26)</label></div></fieldset>
@@ -672,6 +680,13 @@
 
         <fieldset class="card">
           <legend class="label"><span>Screen</span><span class="saved" data-saved="screen"></span></legend>
+          <fieldset class="set"><legend class="k">While he sleeps</legend>
+            <div class="choices"><label><input type="radio" name="screen.idle_screen" value="clock"> Clock (time, date, weather)</label>
+              <label><input type="radio" name="screen.idle_screen" value="pong"> Pong</label>
+              <label><input type="radio" name="screen.idle_screen" value="tetris"> Tetris</label>
+              <label><input type="radio" name="screen.idle_screen" value="frogger"> Frogger</label>
+              <label><input type="radio" name="screen.idle_screen" value="roam"> Look around (his face stays up and his head roams the room)</label></div>
+            <p class="hint">The games play themselves and never lose, with the time in a corner. Night dimming applies to them too. Looking around switches to the clock at night. While he looks around he's still asleep: he only listens for "hey <span data-robot-name>{name}</span>" and no pictures go anywhere.</p></fieldset>
           <div class="set"><label class="k" for="bri">Brightness</label>
             <div class="slide"><input type="range" id="bri" name="screen.brightness" min="5" max="100" step="5"><output for="bri" data-unit="%"></output></div></div>
           <fieldset class="set"><legend class="k">At night</legend>
@@ -694,12 +709,9 @@
               <label><input type="radio" name="vision.snapshot" value="svga"> Quick (800×600)</label>
               <label><input type="radio" name="vision.snapshot" value="off"> Stream frame (320×240)</label></div>
             <p class="hint">A still the robot takes while you're talking, so it adds no wait.</p></fieldset>
-          <div class="set"><label class="check"><input type="checkbox" name="vision.perception" aria-describedby="vphint"> Notice people, faces, gestures and objects</label>
-            <p class="hint" id="vphint">Small models on this computer (nothing leaves it); he gets a one-line note of what they see.</p>
-            <label class="check"><input type="checkbox" name="vision.gestures"> React to gestures: a wave wakes him, thumbs up or down shows on his face</label></div>
-          <div class="set"><label class="k" for="vwords">Your things</label>
-            <textarea id="vwords" name="vision.words" rows="3" maxlength="1000" placeholder="multimeter, Rocky's head board, my blue mug" aria-describedby="vwhint"></textarea>
-            <p class="hint" id="vwhint">Names for things you want him to recognize, separated by commas. He already knows about 190 everyday and maker things (pen, circuit board, breadboard, soldering iron...). Describe how it looks: "green circuit board" works better than a nickname.</p></div>
+          <div class="set"><label class="check"><input type="checkbox" name="vision.perception" aria-describedby="vphint"> Notice faces and waves</label>
+            <p class="hint" id="vphint">Two small models on this computer (nothing leaves it): faces (smiling, looking at him, how far; a one-line note next to the picture when you ask what he sees) and hands, for a wave. Objects and what you hold he reads from the picture itself.</p>
+            <label class="check"><input type="checkbox" name="vision.gestures"> A wave wakes him</label></div>
           <fieldset class="set"><legend class="k">Camera stream</legend>
             <div class="choices"><label><input type="radio" name="vision.stream" value="vga"> Sharp (640×480)</label>
               <label><input type="radio" name="vision.stream" value="qvga"> Light (320×240, less WiFi)</label></div></fieldset>
@@ -730,7 +742,7 @@
         </fieldset>
 
         <fieldset class="card">
-          <legend class="label"><span>{name}</span><span class="saved" data-saved="rocky"></span></legend>
+          <legend class="label"><span><span data-robot-name>{name}</span></span><span class="saved" data-saved="rocky"></span></legend>
           <div class="set"><label class="k" for="hname">Your name <span class="badge">restart</span></label>
             <input type="text" id="hname" name="rocky.human_name" maxlength="40" autocomplete="given-name" aria-describedby="hnamehint">
             <p class="hint" id="hnamehint">What he calls you. Empty = HUMAN_NAME from server/.env, else "friend".</p></div>
@@ -741,6 +753,10 @@
           <fieldset class="set"><legend class="k">His voice plays on</legend>
             <div class="choices"><label><input type="radio" name="rocky.speaker_out" value="robot"> The robot's speaker</label>
               <label><input type="radio" name="rocky.speaker_out" value="computer"> This computer</label></div></fieldset>
+          <div class="set"><label class="k" for="micsel">He listens through</label>
+            <div class="row"><select id="micsel" aria-describedby="michint"><option value="auto">Automatic</option></select>
+              <button type="button" id="micscan">Look for mics</button></div>
+            <p class="hint" id="michint">Automatic = the robot's mic while it's connected, otherwise this computer's. A mic that's unplugged counts as Automatic until it's back.</p></div>
           <div class="set"><label class="k" for="rot">Camera picture turned</label>
             <select id="rot" name="rocky.camera_rotate"><option value="0">0°</option><option value="90">90° clockwise</option>
               <option value="180">180°</option><option value="270">270° clockwise (V2 head)</option></select></div>
@@ -750,7 +766,7 @@
 
         <fieldset class="card">
           <legend class="label"><span>Computer</span><span class="saved" data-saved="computer"></span></legend>
-          <div class="set"><label class="check"><input type="checkbox" name="computer.control" aria-describedby="pchint"> Let {name} use my computer</label>
+          <div class="set"><label class="check"><input type="checkbox" name="computer.control" aria-describedby="pchint"> Let <span data-robot-name>{name}</span> use my computer</label>
             <p class="hint" id="pchint">He can search the web, open websites and the apps below, play or pause music, change the volume and run the Shortcuts you pick. He can't type, click, log in or buy anything. Anyone talking near him can ask too, so switch it off when that matters.</p></div>
           <div class="set"><label class="k" for="pcapps">Apps he may open</label>
             <textarea id="pcapps" name="computer.apps" rows="2" maxlength="1000" spellcheck="false" aria-describedby="pcappshint"></textarea>
@@ -779,12 +795,84 @@
     </details>
   </section>
 
+  <!-- ══ PERSONALITIES ════════════════════════════════════════════════ -->
+  <section role="tabpanel" id="p-chars" aria-labelledby="t-chars" hidden>
+    <p class="notice" id="charsnolauncher" hidden>Personalities are picked and made through the launcher: run <code>server/launcher.py</code> and open its dashboard (port 8766).</p>
+    <div id="charsbody" hidden>
+      <div class="card">
+        <h2 class="label"><span>Personalities</span><span class="sub">who the robot is</span></h2>
+        <div class="packs" id="charlist"></div>
+        <div class="row" style="margin-top:14px">
+          <button type="button" class="primary" id="charnew">New personality</button>
+          <label class="linkish">Import a personality file…<input type="file" id="charimport" accept=".json,application/json" class="visually-hidden"></label>
+        </div>
+        <p class="hint">Switching restarts the server, so the conversation starts fresh. Yours are saved in <code>server/characters/</code>. A personality tells the language model how to behave: read one from someone else before you use it.</p>
+      </div>
+
+      <div class="card" style="margin-top:18px">
+        <h2 class="label"><span id="chartitle">—</span><span class="saved" id="charsaved"></span></h2>
+        <p class="hint" id="chardesc" style="margin:-6px 0 12px"></p>
+        <div class="row" id="charactions">
+          <button type="button" class="primary" id="charuse">Use this personality</button>
+          <button type="button" id="charexport">Export</button>
+          <button type="button" id="chardup">Duplicate</button>
+          <button type="button" class="astro" id="chardelete">Delete</button>
+        </div>
+        <form id="charform" class="charform" novalidate hidden>
+          <div class="grid2">
+            <div>
+              <div class="set"><label class="k" for="c-name">Name</label>
+                <input type="text" id="c-name" maxlength="24" autocomplete="off" spellcheck="false" placeholder="Juniper" aria-describedby="c-namehint">
+                <p class="hint" id="c-namehint">Also the wake word: “hey <span id="c-nameecho">…</span>”.</p></div>
+              <div class="set"><label class="k" for="c-voice">Voice</label>
+                <div class="row"><input type="text" id="c-voice" autocomplete="off" spellcheck="false" placeholder="Fish Audio voice ID, or the voice's address" aria-describedby="c-voicehint">
+                  <button type="button" id="c-test">Test voice</button></div>
+                <p class="hint" id="c-voicehint">Open a voice on <a href="https://fish.audio/discovery/" target="_blank" rel="noopener">fish.audio</a> and copy the long ID from its address, or paste the whole address. Test voice plays a sample here on this computer.</p></div>
+              <fieldset class="set"><legend class="k">Voice model</legend>
+                <div class="choices"><label><input type="radio" name="c-model" value="drama-3"> Drama 3 (acts: sighs, laughs, whispers)</label>
+                  <label><input type="radio" name="c-model" value=""> S2.1 Pro (standard: steady, natural reading)</label></div>
+                <p class="hint">Drama 3 performs short directions the personality writes into its replies, like [small laugh] or &lt;whisper&gt;…&lt;/whisper&gt;. S2.1 Pro is Fish's standard model, the one Rocky uses: a calm, consistent read of the words with no acting directions.</p>
+                <p class="hint">Cost (Fish Audio's API, per million bytes of text, about 12 hours of speech): <b>Drama 3</b> $50, on sale for $10 until Nov 12, 2026, so about $7.50 per thousand replies ($1.50 on sale). <b>S2.1 Pro</b> $15, about $2.25 per thousand replies. A reply is about 150 bytes.</p></fieldset>
+              <div class="set"><label class="k" for="c-desc">Describe the personality</label>
+                <textarea id="c-desc" rows="4" maxlength="1000" placeholder="A dramatic old sea captain who's suspicious of technology and tells too many stories about the sea."></textarea>
+                <div class="row"><button type="button" class="primary" id="c-draft">Write it for me</button></div>
+                <p class="hint">The language model writes everything on the right from this. Press it again for a different take (each one costs a fraction of a cent), then edit anything you like.</p></div>
+            </div>
+            <div>
+              <div class="set"><label class="k" for="c-prompt">Personality</label>
+                <textarea id="c-prompt" rows="14" maxlength="6000" spellcheck="true" aria-describedby="c-prompthint"></textarea>
+                <p class="hint" id="c-prompthint">Who they are and how they talk. Write {human} where your name goes. The robot's own rules (short spoken replies, the camera, the head, the face) are added for every personality.</p></div>
+              <div class="set"><label class="k" for="c-examples">Example replies</label>
+                <textarea id="c-examples" rows="7" maxlength="3000" aria-describedby="c-exhint"></textarea>
+                <p class="hint" id="c-exhint">One per line, each starting with a face: [happy], [thinking]… These shape how they sound more than anything.</p></div>
+              <fieldset class="set"><legend class="k">Said without thinking</legend>
+                <div class="lines">
+                  <label>Woken with nothing else said<input type="text" id="c-l-wake" maxlength="200"></label>
+                  <label>Going to sleep<input type="text" id="c-l-sleep" maxlength="200"></label>
+                  <label>Starting to follow your face<input type="text" id="c-l-track_on" maxlength="200"></label>
+                  <label>Stopping<input type="text" id="c-l-track_off" maxlength="200"></label>
+                </div></fieldset>
+              <div class="set"><label class="k" for="c-wake">Wake words</label>
+                <textarea id="c-wake" rows="4" spellcheck="false" aria-describedby="c-wakehint"></textarea>
+                <p class="hint" id="c-wakehint">One per line: what speech-to-text tends to hear for “hey <span class="c-nameecho2">…</span>”. If the Log shows it mishearing the name, add what it heard.</p></div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button type="button" class="primary" id="c-save" disabled>Save</button>
+            <button type="button" id="c-saveuse" disabled>Save and use</button>
+            <button type="button" id="c-revert" disabled>Undo changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
   <!-- ══ FACES ════════════════════════════════════════════════════════ -->
   <section role="tabpanel" id="p-faces" aria-labelledby="t-faces" hidden>
     <p class="notice" id="facesnolauncher" hidden>Face packs are picked and edited through the launcher: run <code>server/launcher.py</code> and open its dashboard (port 8766).</p>
     <div id="facesbody" hidden>
       <div class="card">
-        <h2 class="label"><span>Face packs</span><span class="sub">what {name}'s eyes look like</span></h2>
+        <h2 class="label"><span>Face packs</span><span class="sub">what <span data-robot-name>{name}</span>'s eyes look like</span></h2>
         <div class="packs" id="packs"></div>
         <p class="hint">Built-in packs are in <code>server/faces/</code>; yours are saved in <code>server/faces/custom/</code>.
           <label class="linkish">Import a pack file…<input type="file" id="packimport" accept=".json,application/json" class="visually-hidden"></label></p>
@@ -800,15 +888,15 @@
             <button type="button" class="astro" id="packdelete">Delete</button>
           </div>
           <div class="gallery" id="gallery" aria-label="every face in this pack"></div>
-          <p class="hint">These move the way they will on {name}: blinks, glances and flourishes. Click one to look closer, or to change it in your own packs.</p>
+          <p class="hint">These move the way they will on <span data-robot-name>{name}</span>: blinks, glances and flourishes. Click one to look closer, or to change it in your own packs.</p>
         </div>
         <aside class="card" id="sidepanel">
           <div class="pinned">
             <h2 class="label"><span id="seltitle">Neutral</span><span class="saved" id="facesaved"></span></h2>
             <canvas class="oled" id="bigface" width="128" height="64" role="img" aria-label="the selected face"></canvas>
             <div class="row" style="margin-top:12px">
-              <button type="button" id="tryon">Show on {name}</button>
-              <label class="check"><input type="checkbox" id="livemirror"> Mirror edits on {name}</label>
+              <button type="button" id="tryon">Show on <span data-robot-name>{name}</span></button>
+              <label class="check"><input type="checkbox" id="livemirror"> Mirror edits on <span data-robot-name>{name}</span></label>
             </div>
           </div>
           <p class="hint" id="builtinnote">Built-in packs stay as they are. Duplicate one to make your own version you can change.</p>
@@ -835,7 +923,7 @@
                 <div class="slide"><input type="range" id="pk-y" min="-20" max="20" step="1"><output for="pk-y" id="pk-yv"></output></div></div>
               <div class="set"><label class="check"><input type="checkbox" id="pk-cyclops"> One eye in the middle</label>
                 <label class="check"><input type="checkbox" id="pk-outline"> Outlined eyes</label>
-                <label class="check"><input type="checkbox" id="pk-glint"> Glint in the eyes</label></div>
+                <label class="check"><input type="checkbox" id="pk-glint"> Pupils that look around</label></div>
               <fieldset class="set"><legend class="k">Mouth</legend>
                 <div class="choices"><label><input type="radio" name="pk-mouth" value="talk"> While talking</label>
                   <label><input type="radio" name="pk-mouth" value="always"> Always (smiles and frowns)</label>
@@ -944,6 +1032,7 @@ const FaceKit = (() => {
       this.talking = false; this.mouthLevel = 0; this.mouth = 0;
       this.blink = 0; this.blinkClosing = false;
       this.gazeX = 0; this.gazeY = 0; this.gtx = 0; this.gty = 0;
+      this.pupilX = 0; this.pupilY = 0; this.ptx = 0; this.pty = 0; this.nextPupil = now + rnd(300, 1500);
       this.pop = 0; this.squint = 0; this.tearY = -1; this.thinkDots = 0; this.jitter = 0;
       this.hearts = [0, 1, 2].map(() => ({ alive: false, x: 0, y: 0, age: 0 })); this.heartSide = false;
       this.zeds = [0, 1, 2].map(() => ({ alive: false, x: 0, y: 0, age: 0 }));
@@ -985,6 +1074,7 @@ const FaceKit = (() => {
       this.curL = { ...look.l }; this.curR = { ...look.r }; this.smile = look.smile;
       this.blink = 0; this.blinkClosing = false; this.pop = this.squint = this.twitch = 0;
       this.gazeX = this.gtx; this.gazeY = this.gty; this.mouth = 0; this.talking = false; this.jitter = 0;
+      this.pupilX = this.pupilY = this.ptx = this.pty = 0;
     }
 
     step(now) {
@@ -1037,6 +1127,11 @@ const FaceKit = (() => {
           if (rnd(0, 100) < 40) this.gtx = this.gty = 0;
           this.nextSaccade = now + rnd(1200, 4000);
         }
+        if (now >= this.nextPupil) {   // the pupils look at something new (Face::stepAnimation)
+          if (rnd(0, 100) < 35) { this.ptx = rnd(-25, 26) / 100; this.pty = rnd(-20, 21) / 100; }
+          else { this.ptx = rnd(-90, 91) / 100; this.pty = rnd(-60, 61) / 100; }
+          this.nextPupil = now + rnd(600, 2600);
+        }
         if (now >= this.nextSquint && this.emotion === "neutral") { this.squint = 1; this.nextSquint = now + rnd(8000, 16000); }
       }
 
@@ -1070,6 +1165,7 @@ const FaceKit = (() => {
       const mouthGoal = this.talking ? clamp(0.15 + this.mouthLevel * 4, 0.15, 1) : 0;
       this.mouth = approach(this.mouth, mouthGoal, this.talking ? 0.5 : 0.3);
       this.gazeX = approach(this.gazeX, this.gtx, 0.35); this.gazeY = approach(this.gazeY, this.gty, 0.35);
+      this.pupilX = approach(this.pupilX, this.ptx, 0.5); this.pupilY = approach(this.pupilY, this.pty, 0.5);
     }
 
     // ── pixels ──
@@ -1111,9 +1207,29 @@ const FaceKit = (() => {
         if (on && P.outline) on = !(inEye(g, px - 2, py) && inEye(g, px + 2, py) && inEye(g, px, py - 2) && inEye(g, px, py + 2));
         if (on) this.dot(x, y, 1);
       }
-      if (P.glint && !P.outline && h > 12 && !this.asleep) {
-        const gs = w > 34 ? 4 : 3;
-        this.rect(fl(g.left + w * 0.22 + this.gazeX * 0.3), fl(g.top + h * 0.18 + e.lid), gs, gs, 0);
+      if (P.glint && h > 12 && !this.asleep) this.drawPupil(g, x0, x1, y0, y1);
+    }
+    // Pupil: a dark disc (lit in outline packs) with a highlight, in the part of the eye that shows (Face::drawEye).
+    drawPupil(g, x0, x1, y0, y1) {
+      const P = this.pack, r = clamp(g.w * 0.14, 3, 6);
+      let top = -1, bot = -1;
+      for (let y = y0; y < y1; ++y) if (inEye(g, g.cx, y + 0.5)) { if (top < 0) top = y; bot = y; }
+      if (top < 0) return;
+      const vcy = (top + bot + 1) * 0.5;
+      let left = -1, right = -1;
+      for (let x = x0; x < x1; ++x) if (inEye(g, x + 0.5, vcy)) { if (left < 0) left = x; right = x; }
+      if (left < 0) return;
+      const vcx = (left + right + 1) * 0.5;
+      const roomX = Math.max(0, (right - left + 1) * 0.5 - r - 2), roomY = Math.max(0, (bot - top + 1) * 0.5 - r - 1.5);
+      const px = clamp(this.pupilX + this.gazeX / 12, -1, 1), py = clamp(this.pupilY + this.gazeY / 8, -1, 1);
+      const pcx = vcx + px * roomX, pcy = vcy + py * roomY, ink = P.outline ? 1 : 0, ri = Math.ceil(r);
+      for (let y = fl(pcy) - ri; y <= fl(pcy) + ri; ++y) for (let x = fl(pcx) - ri; x <= fl(pcx) + ri; ++x) {
+        const dx = x + 0.5 - pcx, dy = y + 0.5 - pcy;
+        if (dx * dx + dy * dy <= r * r && inEye(g, x + 0.5, y + 0.5)) this.dot(x, y, ink);
+      }
+      if (!P.outline && r >= 4) {
+        const hx = fl(pcx - r * 0.5), hy = fl(pcy - r * 0.55);
+        if (inEye(g, hx + 0.5, hy + 0.5)) this.rect(hx, hy, 2, 2, 1);
       }
     }
     drawMouth(cx, cy) {
@@ -1224,7 +1340,14 @@ const FaceKit = (() => {
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const NAME = "{name}";
+  let NAME = "{name}";   // the active personality's name; setRobotName() changes it everywhere on the page
+  function setRobotName(name) {
+    if (!name || name === NAME) return;
+    NAME = name;
+    document.title = name + " · dashboard";
+    document.querySelectorAll("[data-robot-name]").forEach(el => { el.textContent = name; });
+    $("saytext").placeholder = "Words for " + name + "…";
+  }
   let EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "sleepy", "thinking",
                   "curious", "skeptical", "excited", "love", "confused"];   // replaced by the brain's list
   const TUNES = [
@@ -1275,6 +1398,7 @@ const FaceKit = (() => {
     placeTabGlow();
     store.set("rocky-tab", tab.id);
     if (tab.id === "t-settings") loadSettings();
+    if (tab.id === "t-chars") loadChars();
     if (tab.id === "t-faces") loadFaces();
     else if (typeof restoreRobotFace === "function") { $("livemirror").checked = false; restoreRobotFace(); }
     if (tab.id === "t-log") scrollLog(true);
@@ -1324,6 +1448,7 @@ const FaceKit = (() => {
       if (!r.ok) throw new Error("no launcher");
       const s = await r.json();
       server = { launcher: true, running: s.running || s.external, external: s.external, uptime: s.uptime_s };
+      setRobotName(s.name);
     } catch { server = { launcher: false, running: true }; }   // served by the brain itself: it's running
     $("serverbox").hidden = !server.launcher;
     $("nolauncher").hidden = server.launcher;
@@ -1469,9 +1594,12 @@ const FaceKit = (() => {
     $(id).addEventListener("input", headChanged);
     $(id).addEventListener("pointerdown", () => dragging.add(id));
     $(id).addEventListener("pointerup", () => setTimeout(() => dragging.delete(id), 600));
+    $(id).addEventListener("keydown", () => dragging.add(id));     // arrow keys move it too
+    $(id).addEventListener("keyup", () => setTimeout(() => dragging.delete(id), 600));
   }
   $("rotbtn").onclick = () => { const d = ((status.camera_rotate || 0) + 90) % 360; act("camera_rotate", { deg: d }, "Camera turned " + d + "°"); };
   $("centerbtn").onclick = () => act("center", {}, "Head centered");
+  $("dancebtn").onclick = () => act("dance", {}, "Dancing");
   $("trackbtn").onclick = () => act("track", { on: !status.tracking_enabled });
   $("sayform").onsubmit = ev => { ev.preventDefault(); const x = $("saytext").value.trim(); if (x) { act("say", { text: x }, "Saying it"); $("saytext").value = ""; } };
   $("askbtn").onclick = () => { const x = $("saytext").value.trim(); if (x) { act("ask", { text: x }, "Asked " + NAME); $("saytext").value = ""; } };
@@ -1481,7 +1609,7 @@ const FaceKit = (() => {
   // ── what he notices (perception) ───────────────────────────────────────
   function renderNotices(n) {
     const st = $("noticestate");
-    if (!n) { st.textContent = "off"; st.className = "sonar-state"; $("nperson").textContent = $("nhands").textContent = $("nthings").textContent = ""; return; }
+    if (!n) { st.textContent = "off"; st.className = "sonar-state"; $("nperson").textContent = $("nhands").textContent = ""; return; }
     if (!n.ready) { st.textContent = n.error ? "unavailable" : "starting…"; st.className = "sonar-state"; $("nperson").textContent = n.error || ""; return; }
     st.textContent = n.live ? "watching" : "no picture"; st.className = "sonar-state" + (n.live ? " hot" : "");
     const f = n.face, who = [];
@@ -1496,8 +1624,7 @@ const FaceKit = (() => {
       }
     }
     $("nperson").textContent = who.join(", ");
-    $("nhands").textContent = [n.gesture === "wave" ? "waving" : n.gesture, n.holding ? "holding a " + n.holding : ""].filter(Boolean).join(", ");
-    $("nthings").textContent = (n.objects || []).join(", ");
+    $("nhands").textContent = n.waving ? "waving" : "";
   }
 
   // ── the hearing strip ──────────────────────────────────────────────────
@@ -1512,8 +1639,8 @@ const FaceKit = (() => {
     for (let i = 0; i < n; i++) {
       const s = history[history.length - n + i], x = 10 + i * (bw + gap);
       if (!s) { ctx.fillStyle = "rgba(255,255,255,.06)"; ctx.beginPath(); ctx.roundRect(x, mid - 1, bw, 2, 1); ctx.fill(); continue; }
-      const [level, prob, speaking] = s, amp = Math.min(1, Math.sqrt(level) * 3.2), bar = Math.max(2, amp * (h - 18));
-      const heard = prob > (status.tuning?.VAD_THRESHOLD ?? 0.5);
+      const [level, prob, speaking, voice] = s, amp = Math.min(1, Math.sqrt(level) * 3.2), bar = Math.max(2, amp * (h - 18));
+      const heard = voice ?? prob > (status.tuning?.VAD_THRESHOLD ?? 0.5);
       const rgb = speaking ? "255,74,61" : heard ? "242,180,92" : "138,148,166";
       // newest bars brightest: the strip reads as a trail moving left
       const fade = 0.35 + 0.65 * (i / (n - 1));
@@ -1553,9 +1680,10 @@ const FaceKit = (() => {
     $("link").textContent = linked ? "on WiFi" : "not connected"; $("link").className = "v" + (linked ? " good" : " warn");
     $("fps").textContent = fresh ? s.fps + " fps" : "no signal"; $("fps").className = "v" + (fresh ? "" : " warn");
     $("temp").textContent = s.temperature_c != null ? s.temperature_c.toFixed(1) + " °C" : "—";
-    $("temp").className = "v" + (s.temperature_c > 70 ? " warn" : "");
+    $("temp").className = "v" + (s.temperature_c > 75 ? " warn" : "");
     $("state").textContent = s.speaking ? "speaking" : s.thinking ? "thinking" : s.awake ? "awake" : "asleep";
-    $("mic").textContent = s.listening ? (s.mic === "robot" ? "robot mic" : "computer mic") : "off";
+    $("mic").textContent = !s.listening ? "off" : s.mic === "robot" ? "robot mic"
+      : (s.mic_device || "computer mic") + (s.mic_missing ? ` (${s.mic_missing} unplugged)` : "");
     $("awakenote").textContent = s.awake ? "dozes off in " + Math.max(0, Math.round(s.awake_for)) + " s" : "asleep · say hey " + NAME;
     $("viewport").classList.toggle("dark", !fresh); $("viewport").classList.toggle("speaking", !!s.speaking);
     $("framenote").textContent = fresh ? "" : "no fresh frame";
@@ -1584,7 +1712,9 @@ const FaceKit = (() => {
     for (const b of $("faces").children) b.classList.toggle("active", b.dataset.emotion === s.emotion);
     $("trackbtn").classList.toggle("active", !!s.tracking_enabled); $("trackbtn").textContent = s.tracking_enabled ? "Stop following" : "Follow my face";
     takeWords(s);
-    history.push([s.level || 0, s.speech_prob || 0, !!s.speaking]); if (history.length > 60) history.shift();
+    // each bar sums up the time since the last look: its loudest moment, and gold if any of it was a voice to him
+    history.push([s.level_recent ?? s.level ?? 0, s.speech_recent ?? s.speech_prob ?? 0, !!s.speaking, s.voice_recent]);
+    if (history.length > 60) history.shift();
     const hs = $("hearstate");
     hs.textContent = s.speaking ? "speaking" : !s.listening ? "ears off" : s.hearing ? "hearing you" : "listening";
     hs.className = "sonar-state" + (s.speaking ? " astro" : s.hearing ? " hot" : "");
@@ -1622,10 +1752,40 @@ const FaceKit = (() => {
       else if (document.activeElement !== el) el.value = v ?? "";
       if (el.type === "range") { showOutput(el); paintRange(el); }
     }
+    fillMic(s);
     const w = s.weather;
     $("here").textContent = w.lat != null ? (w.location || `${w.lat.toFixed(2)}, ${w.lon.toFixed(2)}`) : "not set: no weather on the clock";
     $("placeclear").hidden = w.lat == null;
   }
+  // the mic picker: Automatic, the robot's, or one of this computer's inputs by name (listed by the launcher)
+  let mics = [], micsError = "";
+  const micValue = r => r.mic === "computer" ? "dev:" + (r.mic_device || "") : r.mic;
+  function fillMic(s) {
+    const sel = $("micsel"), r = s.rocky, want = micValue(r);
+    const opts = [["auto", "Automatic"], ["robot", "The robot's mic"]];
+    const def = mics.find(m => m.default);
+    opts.push(["dev:", "This computer's default" + (def ? ` (${def.name})` : "")]);
+    for (const m of mics) opts.push(["dev:" + m.name, m.name]);
+    if (want.startsWith("dev:") && want !== "dev:" && !mics.some(m => "dev:" + m.name === want))
+      opts.push([want, `${want.slice(4)} (not plugged in)`]);
+    sel.replaceChildren(...opts.map(([v, t]) => new Option(t, v)));
+    sel.value = want;
+    $("michint").textContent = micsError ? `Couldn't list this computer's mics: ${micsError}`
+      : "Automatic = the robot's mic while it's connected, otherwise this computer's. A mic that's unplugged counts as Automatic until it's back.";
+  }
+  async function loadMics() {
+    try {
+      const j = await (await fetch("/launcher/mics")).json();
+      mics = j.mics || []; micsError = j.error || "";
+    } catch { mics = []; micsError = "the launcher didn't answer"; }
+    if (cfg?.settings) fillMic(cfg.settings);
+  }
+  $("micsel").onchange = ev => {
+    const v = ev.target.value;
+    save({ rocky: v.startsWith("dev:") ? { mic: "computer", mic_device: v.slice(4) } : { mic: v, mic_device: "" } }, "rocky");
+  };
+  $("micscan").onclick = () => loadMics().then(() => toast(mics.length ? `Found ${mics.length} mic${mics.length > 1 ? "s" : ""} on this computer` : "No mics found on this computer"));
+
   async function loadSettings() {
     try {
       const r = await fetch("/launcher/settings");
@@ -1636,6 +1796,7 @@ const FaceKit = (() => {
         ? "Key found: he can find a song, artist, album or playlist and play it, and tell you what's playing."
         : "He can tell you what's playing and play, pause or skip. To play songs by name, add a Spotify key to server/.env (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET; the README shows how) and restart the server. Until then he opens Spotify's search for you to pick.";
       fill(cfg.settings);
+      loadMics();
     } catch { /* not served by the launcher: the notice says so */ }
   }
   function valueOf(el) {
@@ -2032,6 +2193,196 @@ const FaceKit = (() => {
   };
   window.addEventListener("beforeunload", ev => { if (fstate.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
 
+  // ── personalities ──────────────────────────────────────────────────────
+  const cstate = { list: [], active: "rocky", sel: "rocky", isNew: false, saved: null, dirty: false, external: false };
+  const charOf = id => cstate.list.find(c => c.id === id);
+  const LINE_KEYS = ["wake", "sleep", "track_on", "track_off"];
+  const MODEL_NAMES = { "": "S2.1 Pro", "drama-3": "Drama 3" };
+  async function loadChars(selectId) {
+    try {
+      const r = await fetch("/launcher/characters");
+      if (!r.ok) throw new Error();
+      const j = await r.json();
+      cstate.list = j.characters.filter(c => c.character); cstate.active = j.active; cstate.external = j.external;
+      $("charsnolauncher").hidden = true; $("charsbody").hidden = false;
+      renderCharList();
+      if (!cstate.isNew || selectId) selectChar(selectId || (charOf(cstate.sel) ? cstate.sel : cstate.active), true);
+    } catch {
+      $("charsnolauncher").hidden = false; $("charsbody").hidden = true;
+    }
+  }
+  function renderCharList() {
+    const box = $("charlist"); box.innerHTML = "";
+    for (const c of cstate.list) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "packcard"; b.dataset.id = c.id;
+      b.setAttribute("aria-pressed", !cstate.isNew && c.id === cstate.sel);
+      const name = document.createElement("span"); name.className = "pname"; name.textContent = c.character.name;
+      const tags = document.createElement("span"); tags.className = "ptags";
+      tags.textContent = [c.id === cstate.active ? "In use" : "", c.builtin ? "Built-in" : "Yours", MODEL_NAMES[c.character.tts_model] || ""].filter(Boolean).join(" · ");
+      if (c.id === cstate.active) tags.classList.add("on");
+      b.append(name, tags);
+      b.onclick = () => selectChar(c.id);
+      box.appendChild(b);
+    }
+  }
+  function confirmCharDiscard() { return !cstate.dirty || confirm("Throw away your unsaved changes to this personality?"); }
+  function selectChar(id, force) {
+    if (!force && (id !== cstate.sel || cstate.isNew) && !confirmCharDiscard()) return;
+    const c = charOf(id) || charOf("rocky"); if (!c) return;
+    cstate.sel = c.id; cstate.isNew = false;
+    for (const b of $("charlist").children) b.setAttribute("aria-pressed", b.dataset.id === c.id);
+    $("chartitle").textContent = c.character.name;
+    $("chardesc").textContent = c.builtin ? c.character.description : "";
+    $("charactions").hidden = false;
+    $("charuse").disabled = c.id === cstate.active; $("charuse").textContent = c.id === cstate.active ? "In use" : "Use this personality";
+    for (const b of ["charexport", "chardup", "chardelete"]) $(b).hidden = c.builtin;
+    $("charform").hidden = c.builtin;
+    if (!c.builtin) fillCharForm(c.character);
+    markCharDirty(false);
+  }
+  function blankChar() {
+    return { name: "", description: "", voice_id: "", tts_model: "drama-3", prompt: "", examples: "",
+             lines: { wake: "", sleep: "", track_on: "", track_off: "" }, wake_words: [] };
+  }
+  function newChar() {
+    if (!confirmCharDiscard()) return;
+    cstate.isNew = true; cstate.sel = null;
+    for (const b of $("charlist").children) b.setAttribute("aria-pressed", false);
+    $("chartitle").textContent = "New personality"; $("chardesc").textContent = "Name it, pick a voice, describe it, then press Write it for me.";
+    $("charactions").hidden = true; $("charform").hidden = false;
+    fillCharForm(blankChar()); markCharDirty(false); $("c-name").focus();
+  }
+  function fillCharForm(ch) {
+    cstate.saved = JSON.parse(JSON.stringify(ch));
+    $("c-name").value = ch.name; $("c-voice").value = ch.voice_id; $("c-desc").value = ch.description || "";
+    for (const r of document.getElementsByName("c-model")) r.checked = r.value === (ch.tts_model || "");
+    $("c-prompt").value = ch.prompt; $("c-examples").value = ch.examples || "";
+    for (const k of LINE_KEYS) $("c-l-" + k).value = ch.lines?.[k] || "";
+    $("c-wake").value = (ch.wake_words || []).join("\n");
+    wakeName = ch.name;
+    nameEcho();
+  }
+  function charFromForm() {
+    const model = [...document.getElementsByName("c-model")].find(r => r.checked)?.value ?? "";
+    return { name: $("c-name").value.trim(), description: $("c-desc").value.trim(), voice_id: $("c-voice").value.trim(), tts_model: model,
+             prompt: $("c-prompt").value.trim(), examples: $("c-examples").value.trim(),
+             lines: Object.fromEntries(LINE_KEYS.map(k => [k, $("c-l-" + k).value.trim()])),
+             wake_words: $("c-wake").value.split("\n").map(w => w.trim()).filter(Boolean) };
+  }
+  function nameEcho() {
+    const n = $("c-name").value.trim(), shown = n || "…";
+    $("c-nameecho").textContent = shown; document.querySelectorAll(".c-nameecho2").forEach(e => e.textContent = shown);
+    const letters = n.replace(/[^a-z]/gi, "").length, hint = $("c-namehint");
+    const short = n && letters < 4;
+    hint.classList.toggle("warn", !!short);
+    hint.firstChild.textContent = "Also the wake word: “hey ";
+    hint.lastChild.textContent = short ? "”. Short names wake it by accident: two or three syllables work best." : "”.";
+  }
+  function markCharDirty(on) {
+    cstate.dirty = on;
+    $("c-save").disabled = !on; $("c-saveuse").disabled = !on && !cstate.isNew; $("c-revert").disabled = !on;
+    if (on) $("charsaved").textContent = "";
+  }
+  // Renaming: once the new name is in (the field loses focus), wake words built on the old name ("hey bolt")
+  // follow it ("hey juniper"); mishearings are left for you.
+  let wakeName = "";
+  function renameWakeWords() {
+    const from = wakeName.trim().toLowerCase(), to = $("c-name").value.trim().toLowerCase();
+    if (!to) return;
+    wakeName = $("c-name").value;
+    if (!from || from === to) return;
+    const esc = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    $("c-wake").value = $("c-wake").value.replace(new RegExp(`\\b${esc}\\b`, "g"), to);
+  }
+  $("charform").addEventListener("input", ev => { if (ev.target.id === "c-name") nameEcho(); markCharDirty(true); });
+  $("c-name").addEventListener("change", renameWakeWords);
+  $("charform").addEventListener("submit", ev => ev.preventDefault());
+  $("charnew").onclick = newChar;
+  $("c-revert").onclick = () => { fillCharForm(cstate.saved); markCharDirty(false); };
+
+  async function saveChar() {
+    const j = await post("/launcher/characters/save", { id: cstate.isNew ? null : cstate.sel, character: charFromForm() });
+    cstate.isNew = false; cstate.dirty = false;
+    setRobotName(j.name);
+    await loadChars(j.id);
+    $("charsaved").textContent = j.restarted ? "saved · restarting so the changes apply" : "saved"; $("charsaved").classList.add("ok");
+    return j;
+  }
+  async function useChar(id) {
+    const j = await post("/launcher/characters/use", { id });
+    setRobotName(j.name);
+    if (j.restarted) toast(`${j.name} is waking up…`);
+    else if (j.external) toast(`${j.name} is picked · restart the server where it runs to switch`);
+    else toast(`${j.name} is picked · they'll be there when the server starts`);
+    await loadChars(id);
+  }
+  $("c-save").onclick = () => saveChar().catch(e => toast(e.message, true));
+  $("c-saveuse").onclick = async () => { try { const j = await saveChar(); await useChar(j.id); } catch (e) { toast(e.message, true); } };
+  $("charuse").onclick = () => { if (confirmCharDiscard()) useChar(cstate.sel).catch(e => toast(e.message, true)); };
+  $("chardelete").onclick = async () => {
+    const c = charOf(cstate.sel);
+    if (!c || !confirm(`Delete the personality “${c.character.name}”? This can't be undone.`)) return;
+    try {
+      const j = await post("/launcher/characters/delete", { id: c.id });
+      cstate.dirty = false; cstate.sel = "rocky";
+      setRobotName(j.name);
+      toast(c.id === cstate.active ? "Deleted · back to Rocky" : "Deleted");
+      await loadChars("rocky");
+    } catch (e) { toast(e.message, true); }
+  };
+  $("chardup").onclick = async () => {
+    if (!confirmCharDiscard()) return;
+    const name = prompt("A name for the copy (it's also the wake word):", "");
+    if (!name) return;
+    try { const j = await post("/launcher/characters/save", { character: { ...charOf(cstate.sel).character, name, wake_words: [] } }); cstate.dirty = false; await loadChars(j.id); toast("Copied: edit away"); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("charexport").onclick = () => {
+    const c = charOf(cstate.sel), blob = new Blob([JSON.stringify(c.character, null, 2) + "\n"], { type: "application/json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = c.id + ".json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $("charimport").onchange = async () => {
+    const f = $("charimport").files[0]; $("charimport").value = "";
+    if (!f || !confirmCharDiscard()) return;
+    try {
+      const j = await post("/launcher/characters/save", { character: JSON.parse(await f.text()) });
+      cstate.dirty = false; cstate.isNew = false; await loadChars(j.id); toast(`Imported ${charOf(j.id)?.character.name || "the personality"}`);
+    } catch (e) { toast(e instanceof SyntaxError ? "That file isn't a personality (bad JSON)" : e.message, true); }
+  };
+
+  $("c-draft").onclick = async () => {
+    const ch = charFromForm(), b = $("c-draft");
+    if ((ch.prompt || ch.examples) && !confirm("Replace what's written on the right with a new draft?")) return;
+    b.disabled = true; b.textContent = "Writing…";
+    try {
+      const j = await post("/launcher/characters/draft", { name: ch.name, description: ch.description, tts_model: ch.tts_model });
+      const d = j.draft;
+      $("c-prompt").value = d.prompt; $("c-examples").value = d.examples;
+      for (const k of LINE_KEYS) $("c-l-" + k).value = d.lines[k] || "";
+      $("c-wake").value = d.wake_words.join("\n");
+      markCharDirty(true); toast("Written · read it over, then Save");
+    } catch (e) { toast(e.message, true); }
+    b.disabled = false; b.textContent = "Write it for me";
+  };
+  let sample = null;
+  $("c-test").onclick = async () => {
+    const ch = charFromForm(), b = $("c-test");
+    const first = ch.examples.split("\n").map(l => l.replace(/^\s*\[\w+\]\s*/, "").trim()).find(Boolean);
+    const text = first || `Hi! I'm ${ch.name || "your new robot"}. This is how I sound.`;
+    b.disabled = true; b.textContent = "Loading…";
+    try {
+      const r = await fetch("/launcher/characters/voice", { method: "POST", headers: { "Content-Type": "application/json", "X-Rocky-Console": "1" },
+                                                           body: JSON.stringify({ voice_id: ch.voice_id, tts_model: ch.tts_model, text }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      if (sample) { sample.pause(); URL.revokeObjectURL(sample.src); }
+      sample = new Audio(URL.createObjectURL(await r.blob()));
+      await sample.play();
+    } catch (e) { toast(e.message, true); }
+    b.disabled = false; b.textContent = "Test voice";
+  };
+  window.addEventListener("beforeunload", ev => { if (cstate.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
+
   // ── log ────────────────────────────────────────────────────────────────
   let logSeq = 0, stick = true;
   const logEl = $("log");
@@ -2069,7 +2420,7 @@ const FaceKit = (() => {
   // ── start ──────────────────────────────────────────────────────────────
   const clock = () => { $("clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); };
   clock(); setInterval(clock, 1000);
-  const first = $({ "#settings": "t-settings", "#faces": "t-faces", "#log": "t-log" }[location.hash] || store.get("rocky-tab") || "t-live");
+  const first = $({ "#settings": "t-settings", "#personalities": "t-chars", "#faces": "t-faces", "#log": "t-log" }[location.hash] || store.get("rocky-tab") || "t-live");
   selectTab(first || tabs[0]);
 })();
 </script>

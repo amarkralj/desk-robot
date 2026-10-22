@@ -13,7 +13,10 @@ frames start with one type byte: `0x01` = mic audio, `0x02` = camera JPEG,
 {"type": "hello", "who": "desk-robot", "fw": "0.4.0", "token": "..."}  // must be the first message; token = ROBOT_TOKEN
 {"type": "state", "pan": 12.5, "emotion": "neutral"}
 {"type": "temp", "c": 52.0}       // chip temperature, sent every ~10 s
-{"type": "speak_done"}            // finished playing the last reply
+{"type": "speak_done", "dry_ms": 0, "wait_ms": 210, "next_ms": 200, "rssi": -58}
+                                  // finished playing the last reply: how long the audio ran dry mid-reply,
+                                  // how long it buffered before playing, the next reply's head start (ms),
+                                  // and the WiFi signal (dBm). Firmware before 0.4.1 sends only the type.
 ```
 
 Binary `0x01` frames: microphone audio, 16 kHz mono signed 16-bit PCM,
@@ -66,8 +69,13 @@ settings by the launcher at http://localhost:8766/.
 
 Binary frames: type byte `0x01` then TTS audio for the speaker, same
 PCM format as above, ~100 ms per frame. The server streams each reply as
-the voice generates it (`bytes: 0`); the robot starts playing after 200 ms
-of audio is buffered and keeps a 32 s ring buffer in PSRAM. The server
+the voice generates it (`bytes: 0`); the robot starts playing once it has a
+head start buffered (400 ms after power-on, up to 600 ms after replies that
+ran dry, settling to 200 ms after clean ones) and keeps a 32 s ring buffer in
+PSRAM. If the robot connects again while its old connection is still open
+(a reboot or replug), the new connection replaces the old one when it comes
+from the same address or the old one has sent nothing for 8 s; otherwise
+it is refused (1013). The server
 waits for `speak_done` before it un-mutes the microphone.
 
 Firmware side: `firmware/src/link.cpp` maps each server message onto the

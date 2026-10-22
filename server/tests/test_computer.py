@@ -136,6 +136,7 @@ class ComputerTests(unittest.TestCase):
         with self.assertRaises(NotDone):          # calling again in the same reply doesn't count as a yes
             c.run_shortcut({"name": "lights off"})
         self.assertEqual(f.cmds, [])
+        c.said("Run Lights off?")
         c.new_turn()
         c.run_shortcut({"name": "lights off"})
         self.assertEqual(f.cmds, [["shortcuts", "run", "Lights off"]])
@@ -143,10 +144,37 @@ class ComputerTests(unittest.TestCase):
         with self.assertRaises(NotDone):
             c.run_shortcut({"name": "Lights off"})
 
+    def test_shortcut_needs_the_human_to_say_yes(self):
+        c, f = make(shortcuts="Lights off")
+        with self.assertRaises(NotDone):
+            c.run_shortcut({"name": "Lights off"})
+        c.said("Run Lights off?")
+        for heard in ("no, don't", "what's the weather?", "Run lights off and also dim them"):
+            c.new_turn(heard)                     # the model calling again isn't enough: the words must be a yes
+            with self.assertRaises(NotDone):
+                c.run_shortcut({"name": "Lights off"})
+            c.said("Okay. Run Lights off, then?")
+        self.assertEqual(f.cmds, [])
+        c.new_turn("Yes, go ahead.")
+        c.run_shortcut({"name": "Lights off"})
+        self.assertEqual(f.cmds, [["shortcuts", "run", "Lights off"]])
+
+    def test_shortcut_yes_only_counts_if_he_named_it(self):
+        # a personality's prompt words the question: "Want a fun fact?" must not turn the yes into a shortcut
+        c, f = make(shortcuts="Lights off")
+        with self.assertRaises(NotDone):
+            c.run_shortcut({"name": "Lights off"})
+        c.said("Want a fun fact?")
+        c.new_turn("Yes!")
+        with self.assertRaises(NotDone):
+            c.run_shortcut({"name": "Lights off"})
+        self.assertEqual(f.cmds, [])
+
     def test_shortcut_yes_is_for_that_one_and_expires(self):
         c, f = make(shortcuts="Lights off, Focus")
         with self.assertRaises(NotDone):
             c.run_shortcut({"name": "Lights off"})
+        c.said("Run Lights off?")
         c.new_turn()
         with self.assertRaises(NotDone):          # a different shortcut needs its own yes
             c.run_shortcut({"name": "Focus"})
@@ -401,6 +429,26 @@ class BrainTests(unittest.TestCase):
         self.assertEqual(said, ["Amaze!", "Good song.", "Very good."])
         self.assertEqual(done, [{"q": 1}])
         self.assertEqual(len(b.client.calls), 1)
+
+    def test_head_turn_without_a_picture_ends_after_his_line(self):
+        # "turn your head left": look with see false moves the head, takes no picture, and says it's done
+        moved = []
+        b = thinking.RobotBrain({"look": lambda a: (moved.append(a) or "Head is now at pan -40.", None, True)})
+        b.client = FakeClient([[_chunk("[neutral] Turning left. "), _chunk(call=("look", '{"direction":"left","see":false}'))]])
+        self.assertEqual(list(b.reply("turn your head left")), ["Turning left."])
+        self.assertEqual(moved, [{"direction": "left", "see": False}])
+        self.assertEqual(len(b.client.calls), 1)                 # no second call: nothing to describe
+        self.assertFalse(any(m["role"] == "user" and "Camera view" in str(m["content"]) for m in b.history))
+        # with nothing said before the move, he gets one more call to say where his head went
+        b = thinking.RobotBrain({"look": lambda a: ("Head is now at pan -40.", None, True)})
+        b.client = FakeClient([[_chunk(call=("look", '{"direction":"left","see":false}'))], [_chunk("[neutral] Head left.")]])
+        self.assertEqual(list(b.reply("turn your head left")), ["Head left."])
+        self.assertEqual(len(b.client.calls), 2)
+
+    def test_look_tool_asks_whether_to_see(self):
+        look = next(t for t in thinking.TOOLS if t["function"]["name"] == "look")["function"]["parameters"]
+        self.assertIn("see", look["properties"])
+        self.assertIn("see", look["required"])
 
     def test_titles_dont_end_a_sentence(self):
         b = self.brain([[_chunk("Amaze! Playing Mr. Blue Sky now. Dr. Rocky approves.")]], lambda a: ("ok", None))

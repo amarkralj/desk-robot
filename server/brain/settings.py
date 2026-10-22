@@ -31,6 +31,10 @@ SCHEMA: dict[str, dict[str, tuple]] = {
         "awake_seconds": (60.0, "float", (10.0, 600.0)),  # how long he stays awake after you talk
         "volume":        (0.7, "float", (0.0, 1.0)),
         "speaker_out":   ("robot", "choice", ("robot", "computer")),
+        # which mic he listens through: "auto" = the robot's while it's connected, else this computer's; "robot";
+        # "computer" = this computer's `mic_device` (by name; empty = MIC_DEVICE from .env, else the system default)
+        "mic":           ("auto", "choice", ("auto", "robot", "computer")),
+        "mic_device":    ("", "str", 120),
         "camera_rotate": (270, "choice", (0, 90, 180, 270)),
         "body_language": (True, "bool", None),           # small head moves while he talks (body.py)
     },
@@ -52,10 +56,12 @@ SCHEMA: dict[str, dict[str, tuple]] = {
     "vision": {
         "every_question":   (True, "bool", None),        # a picture with every question while awake
         "snapshot":         ("xga", "choice", ("off", "svga", "xga", "uxga")),  # sharp still when he looks
-        "perception":       (True, "bool", None),        # local detectors: people, faces, gestures, objects
-        "gestures":         (True, "bool", None),        # wave to wake, thumbs up / down
+        "perception":       (True, "bool", None),        # local detectors: faces, and hands for a wave
+        "gestures":         (True, "bool", None),        # a wave wakes him
         "stream":           ("vga", "choice", ("qvga", "vga")),   # the camera stream: 320x240 or 640x480
-        "words":            ("", "str", 1000),           # your own names for things, comma or line separated
+    },
+    "character": {
+        "id":            ("rocky", "str", 40),           # "rocky" (built in) or one of server/characters/<id>.json
     },
     "face": {
         "pack":          ("rocky", "str", 48),           # a face pack id: server/faces/<id>.json or custom/<id>
@@ -66,6 +72,9 @@ SCHEMA: dict[str, dict[str, tuple]] = {
         "night_start":   ("23:00", "time", None),
         "night_end":     ("07:00", "time", None),
         "night_brightness": (10, "int", (1, 100)),
+        # what the screen shows while he sleeps: the clock, a game that plays itself (firmware idle_games.cpp), or
+        # "roam": his face up and the head looking round the room (the clock at night)
+        "idle_screen":   ("clock", "choice", ("clock", "pong", "tetris", "frogger", "roam")),
     },
     # What Rocky may do on this computer (brain/computer.py). Off until you switch it on; the choice is remembered.
     "computer": {
@@ -87,7 +96,7 @@ SCHEMA: dict[str, dict[str, tuple]] = {
         "TTS_PRESENCE_DB":  (None, "float", (0.0, 12.0)),
     },
 }
-RESTART_NEEDED = {("rocky", "human_name")}
+RESTART_NEEDED = {("rocky", "human_name"), ("character", "id")}
 _TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -132,7 +141,9 @@ def clean_value(section: str, key: str, value):
             raise ValueError(f"{key} must be at most {extra} characters")
         if section == "clock" and key == "timezone" and value and posix_tz(value) is None:
             raise ValueError(f"unknown time zone: {value}")
-        if section == "face" and key == "pack" and not re.match(r"^(custom/)?[a-z0-9][a-z0-9-]{0,39}$", value):
+        if section == "character" and key == "id" and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", value):
+            raise ValueError("a character id is lowercase letters, digits and dashes")
+        if section == "face" and key == "pack" and not re.fullmatch(r"(custom/)?[a-z0-9][a-z0-9-]{0,39}", value):
             raise ValueError("a face pack id is lowercase letters, digits and dashes")
         if section == "computer" and key == "bookmarks":
             computer.parse_bookmarks(value)   # raises ValueError naming the bad line
@@ -252,8 +263,8 @@ def robot_payload(s: dict) -> dict:
         "dmy": c["date_format"] == "day_month",
         "wday": c["show_weekday"],
         "wx": bool(w["show"] and has_loc),
-        "lat": round(w["lat"], 4) if has_loc else 0.0,
-        "lon": round(w["lon"], 4) if has_loc else 0.0,
+        "lat": round(w["lat"], 2) if has_loc else 0.0,     # ~1 km: plenty for weather, and the robot
+        "lon": round(w["lon"], 2) if has_loc else 0.0,     # never stores (or sends out) an exact location
         "unit": w["units"],
         "sun": w["show_sun"],
         "wxmin": w["refresh_min"],
@@ -262,6 +273,7 @@ def robot_payload(s: dict) -> dict:
         "n0": sc["night_start"],
         "n1": sc["night_end"],
         "nbri": sc["night_brightness"],
+        "idle": sc["idle_screen"],
     }
 
 

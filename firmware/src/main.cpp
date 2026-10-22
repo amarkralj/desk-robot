@@ -39,6 +39,7 @@ HomeScreen home(u8g2);
 // sleep face for SLEEP_FACE_MS first. Power-up starts on the home screen; the brain wakes him ("hey Rocky").
 enum class Screen : uint8_t { Home, Face, Sleeping };
 Screen screen = Screen::Home;
+volatile bool roamActive = false;   // the "roam" idle screen is moving the head (roamUpdate)
 uint32_t sleepFaceUntil = 0;
 constexpr uint32_t SLEEP_FACE_MS = 5000;
 ServoNeck panNeck;
@@ -50,16 +51,43 @@ Camera camera;
 uint32_t nextTempMs = 0;
 volatile bool speakDonePending = false;  // set by the speaker task, sent from loop()
 uint32_t slowestLoopMs = 0;              // longest pass of loop() during the last reply (reported with it)
-// While he talks the camera stream is thinned to this, so sending pictures doesn't crowd out his voice arriving
-// over the same WiFi link (and the face keeps animating).
-constexpr uint32_t TALKING_FRAME_MS = 250;
+// While he talks the camera stream is thinned to this (8 fps), so sending pictures doesn't crowd out his voice
+// arriving over the same WiFi link. (It was 4 fps while the face was drawn in loop(); the face has its own task now.)
+constexpr uint32_t TALKING_FRAME_MS = 125;
+// Asleep, 5 fps: all the brain does with the stream then is watch for a wave, 5 times a second. The other pictures
+// would only be sent for nothing (WiFi sending is what heats the chip most).
+constexpr uint32_t ASLEEP_FRAME_MS = 200;
 // Talking mouth while the voice plays on the computer instead of our speaker: the brain sends `mouth <level>`
 // (the voice's loudness) ~25 times a second, and -1 when it's done. Stale after MOUTH_TIMEOUT_MS.
 float brainMouthLevel = -1.0f;
 uint32_t brainMouthMs = 0;
 constexpr uint32_t MOUTH_TIMEOUT_MS = 300;
 
-uint32_t lastFrameMs = 0;
+// `loop`: the slowest time each part of loop() has taken since the last `loop` (finding what stalls the face).
+enum LoopPart : uint8_t { LP_LINK, LP_MIC, LP_SNAPSHOT, LP_JPEG, LP_FACE, LP_SERVO, LP_WHOLE, LP_COUNT };
+const char* const LOOP_PART_NAMES[LP_COUNT] = {"link", "mic", "snapshot", "jpeg", "face", "servo", "whole pass"};
+uint32_t loopWorstUs[LP_COUNT] = {};
+uint32_t loopPasses = 0, loopSlowPasses = 0;   // passes, and passes over 40 ms (the face misses a frame)
+inline void loopTime(LoopPart p, uint32_t t0) {
+  uint32_t dt = micros() - t0;
+  if (dt > loopWorstUs[p]) loopWorstUs[p] = dt;
+}
+
+// The screen (face, clock, assembly screen) and the servos run in tasks of their own, so nothing loop() waits on
+// (a camera picture going out, a message still arriving over WiFi) can freeze the face or stall the head. Each task
+// holds its lock while it works; anything else that changes the face, the screen or the servos takes it too.
+SemaphoreHandle_t screenLock;   // face, home screen, which screen is up, the OLED and its I2C bus
+SemaphoreHandle_t neckLock;     // both servos
+struct Hold {
+  SemaphoreHandle_t m;
+  explicit Hold(SemaphoreHandle_t lock) : m(lock) { xSemaphoreTakeRecursive(m, portMAX_DELAY); }
+  ~Hold() { xSemaphoreGiveRecursive(m); }
+};
+uint32_t faceGapWorstMs = 0;     // longest time between two face frames since the last `loop`
+uint32_t faceGapSpeechMs = 0;    // ... during the last reply (reported with it)
+TaskHandle_t screenTaskHandle = nullptr, neckTaskHandle = nullptr;
+void handleCommand(String line);
+
 uint32_t nextStateMs = 0;
 bool demoMode = false; // `demo on`: cycles emotions on its own (to show the faces off without the brain)
 bool brainConnected = false;
@@ -107,7 +135,7 @@ void printHelp() {
   Serial.println(F("  tilt <deg>   nod head, -85 (down)..85 (up), 0 = level"));
   Serial.println(F("  center       head to center on both axes"));
   Serial.println(F("  assembly on|off  hold both servos at centre for fitting gears/horns (or BOOT within 5 s of power-up)"));
-  Serial.println(F("  motion pan|tilt <speed> <accel>  tune head motion live (deg/s, deg/s^2)"));
+  Serial.println(F("  motion pan|tilt <speed> <accel>  tune head motion live (deg/s, deg/s^2; the brain sends it too)"));
   Serial.println(F("  raw pan|tilt <deg>  calibration move to any head angle the servo can reach, ignoring the limits (watch it!)"));
   Serial.println(F("  blink        blink now"));
   Serial.println(F("  sleep on|off eyes shut, breathing, Z's"));
@@ -127,10 +155,11 @@ void printHelp() {
   Serial.println(F("  snapshot xga one sharp still (vga svga xga sxga uxga) for the brain"));
   Serial.println(F("  servo        check the servo PWM timing"));
   Serial.println(F("  temp         chip temperature"));
+  Serial.println(F("  loop         slowest time of each part of the main loop since the last `loop`"));
   Serial.println(F("  help         this text"));
 }
 
-void handleCommand(String line) {
+static void runCommand(String line) {
   line.trim();
   if (line.isEmpty()) return;
 
@@ -256,6 +285,7 @@ void handleCommand(String line) {
   } else if (cmd == "speak_begin") {
     speaker.beginSpeech(static_cast<size_t>(arg.toInt()));
     slowestLoopMs = 0;
+    faceGapSpeechMs = 0;
   } else if (cmd == "speak_end") {
     speaker.endSpeech();
   } else if (cmd == "mouth") {
@@ -319,7 +349,7 @@ void handleCommand(String line) {
       int sp2 = rest.indexOf(' ');
       float v = rest.toFloat();
       float a = sp2 > 0 ? rest.substring(sp2 + 1).toFloat() : n->accel();
-      if (v > 0 && a > 0) n->setMotion(v, a);
+      if (v > 0 && a > 0) n->setMotion(fminf(v, 720.0f), fminf(a, 6000.0f));   // past that it's only a jolt
     }
     Serial.printf("motion pan %.0f deg/s %.0f deg/s^2 | tilt %.0f deg/s %.0f deg/s^2\n",
                   panNeck.maxSpeed(), panNeck.accel(), tiltNeck.maxSpeed(), tiltNeck.accel());
@@ -336,6 +366,16 @@ void handleCommand(String line) {
                     n == &panNeck ? "pan" : "tilt", static_cast<unsigned>(n->pwmPeriodTicks()),
                     n->powered() ? "powered" : "quiet", worst, best);
     }
+  } else if (cmd == "loop") {
+    Serial.printf("loop: %u passes, %u over 40 ms; worst ms:", static_cast<unsigned>(loopPasses), static_cast<unsigned>(loopSlowPasses));
+    for (int i = 0; i < LP_COUNT; ++i) Serial.printf(" %s %.1f", LOOP_PART_NAMES[i], loopWorstUs[i] / 1000.0f);
+    Serial.printf("; longest gap between face frames %u ms; stack left: screen %u, neck %u bytes\n",
+                  static_cast<unsigned>(faceGapWorstMs),
+                  screenTaskHandle ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(screenTaskHandle)) : 0,
+                  neckTaskHandle ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(neckTaskHandle)) : 0);
+    for (uint32_t& w : loopWorstUs) w = 0;
+    faceGapWorstMs = 0;
+    loopPasses = loopSlowPasses = 0;
   } else if (cmd == "temp") {
     Serial.printf("chip %.1f C\n", temperatureRead());
   } else if (cmd == "glance") {
@@ -348,6 +388,188 @@ void handleCommand(String line) {
     Serial.printf("demo %s\n", demoMode ? "on" : "off");
   } else {
     Serial.println(F("unknown command — type `help`"));
+  }
+}
+
+// Commands change what the screen and the servos are doing, so they take both locks (the screen's first: its task
+// can hold it for a whole frame, ~40 ms, the neck's task only for a moment). The slow console-only commands that
+// touch neither don't, so a 3 s `miclevel` can't freeze the face.
+void handleCommand(String line) {
+  String head = line;
+  head.trim();
+  int sp = head.indexOf(' ');
+  if (sp >= 0) head = head.substring(0, sp);
+  head.toLowerCase();
+  if (head == "miclevel" || head == "snap" || head == "loop" || head == "temp" || head == "help") {
+    runCommand(line);
+    return;
+  }
+  Hold screenHeld(screenLock);
+  Hold neckHeld(neckLock);
+  runCommand(line);
+}
+
+// The screen: the face as fast as the OLED takes it (up to 30 fps; ~23 in practice: drawing takes ~17 ms and the
+// I2C transfer ~25 ms at the SSD1309's 400 kHz maximum), the clock / assembly screen twice a second, or an idle
+// game ~15 times a second. The I2C
+// driver waits for its transfer without holding the CPU, so loop() runs meanwhile.
+static void screenTask(void*) {
+  uint32_t lastFaceMs = 0, lastSlowMs = 0;
+  for (;;) {
+    uint32_t start = millis();
+    {
+      Hold held(screenLock);
+      uint32_t now = millis();
+      if (screen == Screen::Sleeping && static_cast<int32_t>(now - sleepFaceUntil) >= 0) screen = Screen::Home;
+      if (assemblyMode || (screen == Screen::Home && !roamActive)) {
+        if (now - lastSlowMs >= (assemblyMode ? 500 : home.frameMs())) {
+          lastSlowMs = now;
+          if (assemblyMode) drawAssemblyScreen();
+          else home.draw();
+        }
+        lastFaceMs = 0;
+      } else {
+        uint32_t t0 = micros();
+        bool brainTalking = brainMouthLevel >= 0 && millis() - brainMouthMs < MOUTH_TIMEOUT_MS;
+        if (speaker.speaking()) face.setTalking(true, speaker.level());
+        else face.setTalking(brainTalking, brainTalking ? brainMouthLevel : 0.0f);
+        face.update(now);
+        loopTime(LP_FACE, t0);
+        if (lastFaceMs) {
+          uint32_t gap = now - lastFaceMs;
+          if (gap > faceGapWorstMs) faceGapWorstMs = gap;
+          if (speaker.speaking() && gap > faceGapSpeechMs) faceGapSpeechMs = gap;
+        }
+        lastFaceMs = now;
+      }
+    }
+    uint32_t spent = millis() - start;
+    vTaskDelay(pdMS_TO_TICKS(spent < FRAME_INTERVAL_MS ? FRAME_INTERVAL_MS - spent : 1));
+  }
+}
+
+// The servos on their own steady 50 Hz tick, so every servo pulse gets a fresh, evenly spaced position.
+static void neckTask(void*) {
+  TickType_t wake = xTaskGetTickCount();
+  for (;;) {
+    vTaskDelayUntil(&wake, pdMS_TO_TICKS(SERVO_UPDATE_MS));
+    Hold held(neckLock);
+    uint32_t t0 = micros();
+    // While one axis swings, keep the other powered so it can't sag. In assembly
+    // mode both stay powered at centre so they can't be turned by hand.
+    if (panNeck.moving() || assemblyMode) tiltNeck.hold();
+    if (tiltNeck.moving() || assemblyMode) panNeck.hold();
+    uint32_t now = millis();
+    panNeck.update(now);
+    tiltNeck.update(now);
+    loopTime(LP_SERVO, t0);
+  }
+}
+
+// ── Roaming: the "roam" idle screen ────────────────────────────────────────────────────────────────────────────
+// While he's asleep, the idle screen is "roam" and it isn't night (then: the clock), his neutral face is up and the
+// head looks round the room on its own: a new spot every few seconds anywhere across the pan range and half the
+// tilt range, both servos moving at once and timed to arrive together, the eyes going first. Looks near level hold
+// longer (the tilt servo rests there and the head goes quiet); looks up or well down are short, since the tilt servo
+// has to keep holding them. The brain hears when the head starts and stops (`head_moving`), so a turning camera
+// can't pass for a wave. Waking, night or another idle screen: head back to the middle. Runs in loop() (it sends to
+// the brain), taking the locks for the face and the servos.
+// Calmer than a look you ask for, but not slow: crawling servos step visibly (2026-10-21: up from 70/200 and 50/160,
+// which looked jittery). The pauses between looks are set further down and didn't change.
+constexpr float ROAM_PAN_SPEED = 105.0f, ROAM_PAN_ACCEL = 320.0f;
+constexpr float ROAM_TILT_SPEED = 80.0f, ROAM_TILT_ACCEL = 260.0f;
+constexpr float ROAM_TILT_RANGE = (TILT_MAX_DEG < -TILT_MIN_DEG ? TILT_MAX_DEG : -TILT_MIN_DEG) / 2;
+struct RoamState {
+  uint8_t phase = 0;           // 0 pick a spot, 1 eyes have gone: move, 2 moving, 3 settling
+  uint32_t at = 0;             // when the next phase may start
+  float pan = 0, tilt = 0;     // where it's going
+  bool told = false;           // the brain was told the head is moving
+} roam;
+
+static float frandIn(float lo, float hi) { return lo + (hi - lo) * (random(0, 10001) / 10000.0f); }
+
+// Seconds a move of d degrees takes at speed v, acceleration a (speed up, maybe cruise, slow down).
+static float moveTime(float d, float v, float a) { return d <= v * v / a ? 2.0f * sqrtf(d / a) : d / v + v / a; }
+
+// The fraction of (v, a) at which a move of d takes T seconds: the quicker axis slowed to arrive with the other.
+static float slowTo(float d, float v, float a, float T) {
+  float lo = 0.02f, hi = 1.0f;
+  for (int i = 0; i < 20; ++i) {
+    float k = (lo + hi) / 2;
+    if (moveTime(d, v * k, a * k) > T) lo = k; else hi = k;
+  }
+  return hi;
+}
+
+static void roamTell(bool moving) {
+#if HAVE_BRAIN
+  if (moving == roam.told) return;
+  roam.told = moving;
+  brainLink.sendJson(moving ? "{\"type\":\"head_moving\",\"on\":true}" : "{\"type\":\"head_moving\",\"on\":false}");
+#else
+  (void)moving;
+#endif
+}
+
+static void roamUpdate(uint32_t now) {
+  bool want = !assemblyMode && screen == Screen::Home && home.roamingNow();
+  if (want != roamActive) {
+    Hold screenHeld(screenLock);
+    Hold neckHeld(neckLock);
+    roamActive = want;
+    face.setRoaming(want);
+    if (want) {
+      roam.phase = 0;
+      roam.at = now + 1500;    // eyes open a moment before the first look
+    } else {                   // back to normal speeds, head to the middle
+      panNeck.setMotion(PAN_MAX_SPEED, PAN_ACCEL);
+      tiltNeck.setMotion(TILT_MAX_SPEED, TILT_ACCEL);
+      panNeck.setTarget(0);
+      tiltNeck.setTarget(0);
+      roamTell(false);
+    }
+    return;
+  }
+  if (!roamActive || static_cast<int32_t>(now - roam.at) < 0) return;
+  if (roam.phase == 0) {
+    // somewhere new: a glance from here, back to the middle, or anywhere across the room
+    float pan0 = panNeck.target(), tilt0 = tiltNeck.target();
+    int kind = random(100);
+    float pan = kind < 25 ? pan0 + frandIn(15, 35) * (random(2) ? 1 : -1) : kind < 40 ? frandIn(-10, 10)
+                                                                                     : frandIn(PAN_MIN_DEG, PAN_MAX_DEG);
+    roam.pan = constrain(pan, PAN_MIN_DEG, PAN_MAX_DEG);
+    int band = random(100);    // mostly near level, where the tilt servo can rest
+    roam.tilt = band < 55 ? frandIn(TILT_RELAX_MIN_DEG, 0) : band < 80 ? frandIn(2, ROAM_TILT_RANGE)
+                                                                       : frandIn(-ROAM_TILT_RANGE, TILT_RELAX_MIN_DEG - 1);
+    {
+      // the eyes go first. Pan + is his right, which is your left as you face the screen: pupils to screen left
+      Hold screenHeld(screenLock);
+      face.lookToward(-(roam.pan - pan0) / 60.0f, -(roam.tilt - tilt0) / 30.0f, 1800);
+    }
+    roam.phase = 1;
+    roam.at = now + 250;
+  } else if (roam.phase == 1) {
+    Hold neckHeld(neckLock);
+    float dp = fabsf(roam.pan - panNeck.current()), dt = fabsf(roam.tilt - tiltNeck.current());
+    float tp = moveTime(dp, ROAM_PAN_SPEED, ROAM_PAN_ACCEL), tt = moveTime(dt, ROAM_TILT_SPEED, ROAM_TILT_ACCEL);
+    float T = fmaxf(tp, tt);
+    float kp = tp < T && dp > 0.5f ? slowTo(dp, ROAM_PAN_SPEED, ROAM_PAN_ACCEL, T) : 1.0f;
+    float kt = tt < T && dt > 0.5f ? slowTo(dt, ROAM_TILT_SPEED, ROAM_TILT_ACCEL, T) : 1.0f;
+    panNeck.setMotion(ROAM_PAN_SPEED * kp, ROAM_PAN_ACCEL * kp);
+    tiltNeck.setMotion(ROAM_TILT_SPEED * kt, ROAM_TILT_ACCEL * kt);
+    panNeck.setTarget(roam.pan);
+    tiltNeck.setTarget(roam.tilt);
+    roamTell(true);
+    roam.phase = 2;
+  } else if (roam.phase == 2) {
+    if (panNeck.moving() || tiltNeck.moving()) return;
+    roam.phase = 3;
+    roam.at = now + 300;       // the head stops shaking
+  } else {
+    roamTell(false);
+    bool quiet = roam.tilt >= TILT_RELAX_MIN_DEG && roam.tilt <= TILT_RELAX_MAX_DEG;
+    roam.at = now + (quiet ? random(4000, 9001) : random(1500, 3501));
+    roam.phase = 0;
   }
 }
 
@@ -377,6 +599,8 @@ static const char* resetReason() {
 
 void setup() {
   quietServoLines();   // again, in case the core touched the pins since
+  screenLock = xSemaphoreCreateRecursiveMutex();
+  neckLock = xSemaphoreCreateRecursiveMutex();
   Serial.begin(115200);
   randomSeed(esp_random());
 
@@ -425,6 +649,7 @@ void setup() {
   brainLink.onSettings([](const char* json) { handleCommand(String("settings ") + json); });
   brainLink.onFace([](const char* json) {
     // {"type":"face","save":true,"pack":{...}}: save = false while the dashboard previews an edit
+    Hold held(screenLock);
     JsonDocument doc;
     if (deserializeJson(doc, json)) return;
     String pack;
@@ -440,7 +665,15 @@ void setup() {
              [](bool connected) {
                // The brain says whether he's awake when it connects. If it goes away while he's awake, he can't hear
                // any more: he goes to sleep (sleep face, then the clock). Idle glances only while connected and awake.
+               Hold screenHeld(screenLock);
+               Hold neckHeld(neckLock);
                brainConnected = connected;
+               if (!connected) {
+                 // Camera and mic go quiet with the link: only the next brain session that asks starts them again
+                 // (the brain sends `stream` and `mic` every time it connects).
+                 mic.setStreaming(false);
+                 camera.setStreaming(false, 10);
+               }
                if (!connected && screen == Screen::Face && !demoMode) handleCommand("sleep on");
                applyGlances();
              });
@@ -448,6 +681,9 @@ void setup() {
 #else
   Serial.println(F("no include/secrets.h — USB-only mode (see secrets.h.example)"));
 #endif
+  // Above loop() (priority 1) on the same core, so they run on time; the neck's tick is short and comes first.
+  xTaskCreatePinnedToCore(neckTask, "neck", 4096, nullptr, 3, &neckTaskHandle, 1);
+  xTaskCreatePinnedToCore(screenTask, "screen", 8192, nullptr, 2, &screenTaskHandle, 1);
 }
 
 void loop() {
@@ -465,36 +701,57 @@ void loop() {
 
   uint32_t now = millis();
   {
+    static uint32_t lastPassUs = micros();
+    uint32_t us = micros();
+    if (loopPasses++) {
+      if (us - lastPassUs > loopWorstUs[LP_WHOLE]) loopWorstUs[LP_WHOLE] = us - lastPassUs;
+      if (us - lastPassUs > 40000) ++loopSlowPasses;
+    }
+    lastPassUs = us;
     static uint32_t lastPassMs = now;
     if (speaker.speaking() && now - lastPassMs > slowestLoopMs) slowestLoopMs = now - lastPassMs;
     lastPassMs = now;
   }
 
+  uint32_t t0;
 #if HAVE_BRAIN
+  t0 = micros();
   brainLink.update(now);
+  loopTime(LP_LINK, t0);
   if (speakDonePending) {
     speakDonePending = false;
-    brainLink.sendJson("{\"type\":\"speak_done\"}");
-    Serial.printf("speech: %u underruns, prebuffered %u bytes in %u ms, slowest loop %u ms, wifi %d dBm\n",
-                  speaker.lastUnderruns(), speaker.lastPrebuffered(), speaker.lastPrebufferMs(),
-                  static_cast<unsigned>(slowestLoopMs), WiFi.RSSI());
+    // With how it went, so the brain's log shows a voice that ran dry and the WiFi signal at the time.
+    char done[128];
+    snprintf(done, sizeof(done), "{\"type\":\"speak_done\",\"dry_ms\":%u,\"wait_ms\":%u,\"next_ms\":%u,\"rssi\":%d}",
+             static_cast<unsigned>(speaker.lastUnderruns() * 5), static_cast<unsigned>(speaker.lastPrebufferMs()),
+             static_cast<unsigned>(speaker.headStartMs()), static_cast<int>(WiFi.RSSI()));
+    brainLink.sendJson(done);
+    Serial.printf("speech: %u underruns, prebuffered %u bytes in %u ms, slowest loop %u ms, longest face gap %u ms, "
+                  "wifi %d dBm\n", speaker.lastUnderruns(), speaker.lastPrebuffered(), speaker.lastPrebufferMs(),
+                  static_cast<unsigned>(slowestLoopMs), static_cast<unsigned>(faceGapSpeechMs), WiFi.RSSI());
   }
   {
     // The microphone. Not while he talks: the brain doesn't listen then (he'd hear himself), and those 33 small
     // messages a second would only compete with his voice for the WiFi link.
     static uint8_t frame[Mic::FRAME_BYTES];
+    t0 = micros();
     bool talking = speaker.speaking();
     while (mic.nextFrame(frame)) {
       if (brainLink.connected() && !talking) brainLink.sendBinary(0x01, frame, sizeof(frame));
     }
+    loopTime(LP_MIC, t0);
   }
+  t0 = micros();
   if (size_t n = camera.snapshotLen()) {
     if (brainLink.connected()) brainLink.sendBinary(0x03, camera.snapshotData(), n);
     Serial.printf("snapshot: %u bytes in %u ms\n", static_cast<unsigned>(n), static_cast<unsigned>(camera.snapshotMs()));
     camera.snapshotDone();
   }
+  loopTime(LP_SNAPSHOT, t0);
+  t0 = micros();
   static uint32_t lastJpgMs = 0;
-  if (brainLink.connected() && camera.streaming() && (!speaker.speaking() || now - lastJpgMs >= TALKING_FRAME_MS)) {
+  uint32_t frameGap = speaker.speaking() ? TALKING_FRAME_MS : face.asleep() ? ASLEEP_FRAME_MS : 0;
+  if (brainLink.connected() && camera.streaming() && now - lastJpgMs >= frameGap) {
     static uint8_t* jpg = static_cast<uint8_t*>(ps_malloc(64 * 1024));
     size_t n = jpg ? camera.takeFrame(jpg, 64 * 1024) : 0;
     if (n > 0) {
@@ -502,6 +759,7 @@ void loop() {
       lastJpgMs = now;
     }
   }
+  loopTime(LP_JPEG, t0);
   if (brainLink.connected() && now >= nextTempMs) {
     nextTempMs = now + 10000;
     brainLink.sendJson(String("{\"type\":\"temp\",\"c\":") + String(temperatureRead(), 1) + "}");
@@ -520,6 +778,7 @@ void loop() {
         Emotion::Sad,     Emotion::Angry,   Emotion::Sleepy,
     };
     demoEmotionIdx = (demoEmotionIdx + 1) % (sizeof(cycle) / sizeof(cycle[0]));
+    Hold held(screenLock);
     face.setEmotion(cycle[demoEmotionIdx]);
     nextDemoEmotionMs = now + random(6000, 12000);
   }
@@ -529,38 +788,18 @@ void loop() {
     static bool wasDown = false;
     bool down = digitalRead(PIN_BOOT_BUTTON) == LOW;
     if (down && !wasDown) {
+      Hold screenHeld(screenLock);
+      Hold neckHeld(neckLock);
       if (assemblyMode) setAssemblyMode(false);
       else if (now < ASSEMBLY_WINDOW_MS) setAssemblyMode(true);
     }
     wasDown = down;
   }
+  // The screen and the servos: screenTask() and neckTask(). Roaming decides where the head goes next.
+  roamUpdate(now);
 
-  if (screen == Screen::Sleeping && static_cast<int32_t>(now - sleepFaceUntil) >= 0) screen = Screen::Home;
-
-  if (assemblyMode) {
-    static uint32_t lastAsmDrawMs = 0;
-    if (now - lastAsmDrawMs >= 500) { lastAsmDrawMs = now; drawAssemblyScreen(); }
-  } else if (screen == Screen::Home) {
-    static uint32_t lastHomeMs = 0;
-    if (now - lastHomeMs >= 500) { lastHomeMs = now; home.draw(); }
-  } else if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
-    lastFrameMs = now;
-    bool brainTalking = brainMouthLevel >= 0 && millis() - brainMouthMs < MOUTH_TIMEOUT_MS;  // not `now`: may predate it
-    if (speaker.speaking()) face.setTalking(true, speaker.level());
-    else face.setTalking(brainTalking, brainTalking ? brainMouthLevel : 0.0f);
-    face.update(now);
-  }
-
-  // Servos on their own steady 50 Hz tick (not the face's 30 fps), so every
-  // servo pulse gets a fresh, evenly spaced position.
-  static uint32_t lastServoMs = 0;
-  if (now - lastServoMs >= SERVO_UPDATE_MS) {
-    lastServoMs = now;
-    // While one axis swings, keep the other powered so it can't sag. In assembly
-    // mode both stay powered at centre so they can't be turned by hand.
-    if (panNeck.moving() || assemblyMode) tiltNeck.hold();
-    if (tiltNeck.moving() || assemblyMode) panNeck.hold();
-    panNeck.update(now);
-    tiltNeck.update(now);
-  }
+  // Rest 1 ms each pass. Without it loop() spun ~150,000 times a second with nothing to do, keeping a core flat out
+  // (heat); with it the core sleeps between passes. Nothing here needs it sooner: the voice arrives 10 times a
+  // second, the mic 33, the camera 10.
+  delay(1);
 }

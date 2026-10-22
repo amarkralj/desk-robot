@@ -1,13 +1,19 @@
-"""Perception's note to the model, from hand-made detector state. No models, no camera."""
+"""Perception's note to the model and its wave, from hand-made detector state. No models, no camera."""
 
 import time
 import unittest
-from collections import deque
 from types import SimpleNamespace
 
 import numpy as np
 
 from brain import perception as P
+
+
+def face(**kw):
+    f = {"at": time.time(), "smiling": False, "mouth_open": False, "eyes_closed": False, "looking": True,
+         "distance_m": 1.1, "yaw": 3, "pitch": -2}
+    f.update(kw)
+    return f
 
 
 class NoteTests(unittest.TestCase):
@@ -24,54 +30,64 @@ class NoteTests(unittest.TestCase):
         p._frame_at = time.time() - 10
         self.assertEqual(p.describe(), "")              # no live picture
 
-    def test_person_gesture_and_things(self):
+    def test_a_face(self):
         p, now = self.fresh(), time.time()
         p._people.append((now, 1))
-        p._face = {"at": now, "smiling": True, "mouth_open": False, "eyes_closed": False, "looking": True,
-                   "distance_m": 1.1, "yaw": 3, "pitch": -2}
-        p._gesture = ("thumbs up", now)
-        p._holding = ("cup", now)
-        p._objects = {"laptop": deque([now, now]), "cup": deque([now, now]), "chair": deque([now])}
-        note = p.describe()
-        self.assertIn("one person about 1 m away, looking at you, smiling, showing a thumbs up, holding a cup", note)
-        self.assertIn("Also in view: laptop", note)
-        self.assertNotIn("chair", note)                 # seen once: not trusted yet
-        self.assertNotIn("Also in view: laptop, cup", note)   # the held cup isn't listed twice
+        p._face = face(smiling=True)
+        self.assertEqual(p.describe(),
+                         "(What your camera's face detector notices right now, may be wrong: "
+                         "one person about 1 m away, looking at you, smiling.)")
+        p._face = face(distance_m=0.3, looking=False)
+        self.assertIn("one person very close, looking away", p.describe())
 
-    def test_nobody(self):
-        p, now = self.fresh(), time.time()
-        p._objects = {"keyboard": deque([now, now, now])}
-        self.assertIn("no one in view. Also in view: keyboard", p.describe())
+    def test_no_face_no_note(self):
+        # it only sees faces turned to the camera, so it never claims "no one in view": the picture shows the rest
+        self.assertEqual(self.fresh().describe(), "")
 
-    def test_wave_beats_other_gestures(self):
+    def test_summary_has_no_objects_or_gestures(self):
         p, now = self.fresh(), time.time()
-        p._people.append((now, 1))
         p._waved_at = now
-        p._gesture = ("open hand", now)
-        self.assertIn("waving", p.describe())
+        s = p.summary()
+        self.assertTrue(s["waving"])
+        for gone in ("objects", "holding", "gesture"):
+            self.assertNotIn(gone, s)
 
-    def test_asleep_watches_only_hands(self):
+
+class FakeHands:
+    """The gesture recognizer: an open palm whose wrist is at the x positions given, one per look."""
+    def __init__(self, xs, category="Open_Palm"):
+        self.xs, self.category = list(xs), category
+
+    def recognize(self, frame):
+        x = self.xs.pop(0)
+        lm = [SimpleNamespace(x=x, y=0.5), SimpleNamespace(x=x + 0.05, y=0.6)]
+        return SimpleNamespace(hand_landmarks=[lm], gestures=[[SimpleNamespace(category_name=self.category, score=0.9)]])
+
+
+class WaveTests(unittest.TestCase):
+    def run_looks(self, hands, awake=False):
         import cv2
-
-        class Hands:
-            def recognize(self, frame):
-                return SimpleNamespace(hand_landmarks=[], gestures=[])
 
         class Unused:
             def __getattr__(self, name):
-                raise AssertionError("an awake-only model ran while asleep")
+                raise AssertionError("the face model ran while asleep")
 
-        p = P.Perception(eyes=None)
-        p._gest, p._faces, p._det, p._sig = Hands(), Unused(), Unused(), Unused()
-        p.awake = lambda: False
-        for _ in range(4):                              # faces / objects would run on every other look
+        waves = []
+        p = P.Perception(eyes=None, on_gesture=waves.append)
+        p._gest, p._faces = hands, Unused()
+        p.awake = lambda: awake
+        for _ in range(len(hands.xs)):
             p._look(np.zeros((48, 64, 3), np.uint8), time.time(), cv2)
-        self.assertEqual(p.boxes, [])
+        return waves, p
 
-    def test_holding_overlap(self):
-        hand = (100, 100, 40, 40)
-        self.assertGreater(P._iou_part((88, 88, 64, 64), (110, 110, 20, 20)), 0.9)   # cup inside the grip
-        self.assertEqual(P._iou_part(hand, (300, 300, 20, 20)), 0.0)
+    def test_an_open_hand_moving_side_to_side_is_a_wave(self):
+        waves, p = self.run_looks(FakeHands([0.40, 0.50, 0.40, 0.50, 0.40]))
+        self.assertEqual(waves, ["wave"])
+        self.assertEqual([b[0] for b in p.boxes], ["hand"])
+
+    def test_a_still_hand_or_another_sign_is_not(self):
+        self.assertEqual(self.run_looks(FakeHands([0.40] * 6))[0], [])
+        self.assertEqual(self.run_looks(FakeHands([0.40, 0.50, 0.40, 0.50, 0.40], "Thumb_Up"))[0], [])
 
 
 if __name__ == "__main__":
