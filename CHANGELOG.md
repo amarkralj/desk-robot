@@ -3,7 +3,7 @@
 Each version of the robot is a git tag and a GitHub Release. `main` is the
 latest work. A video matches the tagged version it was made with.
 
-## v2.0
+## v2.0 - 2026-10-22
 
 Hardware:
 
@@ -33,6 +33,11 @@ Software:
 - Assembly mode (BOOT button) centres both servos for fitting the gears.
 - Body language: small head moves with his emotion while he talks, and a
   thinking glance; still while asleep, tracking, or taking a picture.
+- Computer control (off until you switch it on): he can open sites and
+  apps, play music, change the volume and run Shortcuts you allow.
+- Robot link: a robot that restarts reconnects at once, the firmware joins
+  the strongest access point and adapts its speaker buffer, and the
+  connection token is checked more strictly.
 
 ## v1.0 - 2026-09-22
 
