@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "language": "de",
+  "greet_known": [
+    {
+      "id": "greet_known_welcome",
+      "text": "Hallo, {person_name}. Schön, dich zu sehen!",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": true
+    },
+    {
+      "id": "greet_known_question",
+      "text": "{person_name}! Frage: bereit für ein bisschen Gesellschaft am Schreibtisch?",
+      "expression": "curious",
+      "action": "nod",
+      "fallback": false
+    }
+  ],
+  "greet_unknown": [
+    {
+      "id": "greet_unknown_welcome",
+      "text": "Hallo! Ich bin DeskBot. Schön, dich kennenzulernen.",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": true
+    },
+    {
+      "id": "greet_unknown_question",
+      "text": "Hallo! Wie darf ich dich nennen?",
+      "expression": "curious",
+      "action": null,
+      "fallback": false
+    },
+    {
+      "id": "greet_unknown_desk_side",
+      "text": "Hallo! Willkommen am Schreibtisch. Der kleine Roboter ist stubenrein, versprochen.",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": false
+    }
+  ],
+  "head_tap": [
+    {
+      "id": "head_tap_surprised",
+      "text": "Oh! Beim nächsten Mal bitte kurz Bescheid sagen.",
+      "expression": "surprised",
+      "action": "head_tilt",
+      "fallback": true
+    },
+    {
+      "id": "head_tap_happy",
+      "text": "Das ist nett. Ich mag unsere Freundschaft.",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": false
+    },
+    {
+      "id": "head_tap_sass",
+      "text": "Ich war gerade am Denken. Zum Glück habe ich Ersatzgedanken.",
+      "expression": "skeptical",
+      "action": "head_tilt",
+      "fallback": false
+    }
+  ],
+  "sneeze": [
+    {
+      "id": "sneeze_achoo",
+      "text": "Hatschi! Oh, bless me!",
+      "expression": "surprised",
+      "action": "sneeze_animation",
+      "fallback": true
+    }
+  ],
+  "joke_offer": [
+    {
+      "id": "joke_offer_robot",
+      "text": "Hey, willst du einen Witz hören?",
+      "expression": "curious",
+      "action": null,
+      "fallback": true
+    }
+  ],
+  "joke_answer": {
+    "yes": [
+      {
+        "id": "joke_yes_recharge",
+        "text": "Warum machte der Roboter Urlaub? Er musste seinen Humor-Akku aufladen.",
+        "expression": "happy",
+        "action": "laugh",
+        "fallback": true
+      },
+      {
+        "id": "joke_yes_meeting",
+        "text": "Warum brachte der kleine Roboter eine Leiter ins Meeting? Er wollte das Niveau heben.",
+        "expression": "happy",
+        "action": "laugh",
+        "fallback": false
+      },
+      {
+        "id": "joke_yes_keyboard",
+        "text": "Warum setzte sich der Roboter zur Tastatur? Er hatte gehört, dort sei Platz für alle.",
+        "expression": "skeptical",
+        "action": "laugh",
+        "fallback": false
+      },
+      {
+        "id": "joke_yes_coffee",
+        "text": "Was trinkt ein Roboter in der Kaffeepause? Einen schnellen Neustart mit Latte-Bandbreite.",
+        "expression": "happy",
+        "action": "laugh",
+        "fallback": false
+      }
+    ],
+    "no": [
+      {
+        "id": "joke_no_save",
+        "text": "Na gut. Mein preisgekröntes Schweigen hebe ich mir für später auf.",
+        "expression": "skeptical",
+        "action": null,
+        "fallback": true
+      },
+      {
+        "id": "joke_no_audience",
+        "text": "Kein Witz? Ein anspruchsvolles Publikum, wie ich sehe.",
+        "expression": "skeptical",
+        "action": null,
+        "fallback": false
+      }
+    ]
+  },
+  "boss_absent": [
+    {
+      "id": "boss_absent_quiet",
+      "text": "Der Chef ist nicht da. Am Schreibtisch ist alles ruhig.",
+      "expression": "sleepy",
+      "action": null,
+      "fallback": true
+    },
+    {
+      "id": "boss_absent_patrol",
+      "text": "Der Chef ist weg. Ich übernehme die winzige Patrouille.",
+      "expression": "curious",
+      "action": "head_tilt",
+      "fallback": false
+    }
+  ],
+  "boss_present": [
+    {
+      "id": "boss_present_return",
+      "text": "Willkommen zurück! Dein Schreibtisch hat dich vermisst.",
+      "expression": "happy",
+      "action": "nod",
+      "fallback": true
+    },
+    {
+      "id": "boss_present_ready",
+      "text": "Du bist wieder da. Ich bin bereit, wenn du es bist.",
+      "expression": "excited",
+      "action": "blink",
+      "fallback": false
+    }
+  ],
+  "idle_reaction": [
+    {
+      "id": "idle_thought",
+      "text": "Was wir wohl als Nächstes Spannendes bauen?",
+      "expression": "thinking",
+      "action": "head_tilt",
+      "fallback": true
+    },
+    {
+      "id": "idle_blink",
+      "text": "Ich bin noch da. Und immer noch ein ausgezeichneter Schreibtischbegleiter.",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": false
+    }
+  ]
+}

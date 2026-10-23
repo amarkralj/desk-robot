@@ -354,6 +354,14 @@
   .charform .lines { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .charform .lines label { display: grid; gap: 4px; font: 12px var(--body); color: var(--muted); }
   .hint.warn { color: var(--astro); }
+  .dbgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 18px; }
+  .dbpeople { display: grid; gap: 10px; }
+  .dbperson { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; align-items: end;
+              padding: 10px; border: 1px solid var(--line); background: var(--well); }
+  .dbperson label, .dbform label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+  .dbperson .check, .dbform .check { display: flex; align-items: center; }
+  .dbactions { display: flex; gap: 8px; flex-wrap: wrap; }
+  #dbcontent { min-height: 360px; font: 12px/1.5 var(--mono); }
 
   /* ── log ────────────────────────────────────────────────────────────── */
   .log { position: relative; height: min(62vh, 640px); overflow: auto; margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 4px;
@@ -575,6 +583,7 @@
     <span class="tabglow" id="tabglow" aria-hidden="true"></span>
     <button type="button" role="tab" id="t-live" aria-controls="p-live" aria-selected="true">Live</button>
     <button type="button" role="tab" id="t-settings" aria-controls="p-settings" aria-selected="false" tabindex="-1">Settings</button>
+    <button type="button" role="tab" id="t-deskbot" aria-controls="p-deskbot" aria-selected="false" tabindex="-1">DeskBot</button>
     <button type="button" role="tab" id="t-chars" aria-controls="p-chars" aria-selected="false" tabindex="-1">Personalities</button>
     <button type="button" role="tab" id="t-faces" aria-controls="p-faces" aria-selected="false" tabindex="-1">Faces</button>
     <button type="button" role="tab" id="t-log" aria-controls="p-log" aria-selected="false" tabindex="-1">Log</button>
@@ -793,6 +802,64 @@
       </div>
       <p class="hint">Saved and applied straight away. <button type="button" id="advreset">Back to the defaults</button></p>
     </details>
+  </section>
+
+  <!-- ══ DESKBOT OFFLINE CONFIGURATION ════════════════════════════════ -->
+  <section role="tabpanel" id="p-deskbot" aria-labelledby="t-deskbot" hidden>
+    <p class="notice">Local DeskBot configuration. These controls do not start the brain, camera, microphone, recognition, or spontaneous behavior. Touch sensitivity is reserved for future hardware.</p>
+    <div class="dbgrid">
+      <fieldset class="card">
+        <legend class="label">Language and spontaneous behavior</legend>
+        <div class="set"><label class="k" for="db-language">Robot language</label>
+          <select id="db-language"><option value="en">English</option><option value="de">Deutsch</option></select></div>
+        <label class="check"><input type="checkbox" id="db-events"> Enable spontaneous events (configuration only; no scheduler starts here)</label>
+        <div class="set"><span class="k">Event interval, minutes</span>
+          <div class="times"><label for="db-min" class="hint">Minimum</label><input id="db-min" type="number" min="1" max="1440">
+            <label for="db-max" class="hint">Maximum</label><input id="db-max" type="number" min="1" max="1440"></div></div>
+        <div class="set"><span class="k">Allowed active hours</span>
+          <div class="times"><label for="db-start" class="hint">From</label><input id="db-start" type="time">
+            <label for="db-end" class="hint">to</label><input id="db-end" type="time"></div></div>
+        <label class="check"><input type="checkbox" id="db-quiet"> Quiet mode</label>
+        <div class="set"><label class="k" for="db-touch">Future touch sensitivity</label>
+          <div class="slide"><input id="db-touch" type="range" min="0" max="100" step="1"><output id="db-touch-value">50</output></div>
+          <p class="hint">Stored as a preference only. This does not indicate that touch hardware is present.</p></div>
+        <button type="button" class="primary" id="db-settings-save">Save behavior settings</button>
+      </fieldset>
+
+      <fieldset class="card">
+        <legend class="label">Privacy and configured owner</legend>
+        <label class="check"><input type="checkbox" id="db-privacy"> Privacy mode (identity recognition stays disabled)</label>
+        <label class="check"><input type="checkbox" id="db-recognition"> Recognition preference enabled</label>
+        <p class="hint">Recognition requires privacy mode to be off. Saving these preferences does not access a camera or run recognition.</p>
+        <div class="set"><label class="k" for="db-owner">Configured owner (identity is never guessed)</label>
+          <select id="db-owner"><option value="">No owner configured</option></select>
+          <button type="button" id="db-owner-save">Save configured owner</button></div>
+        <div class="set dbform">
+          <span class="k">Add a local person</span>
+          <label>Display name<input id="db-person-name" type="text" maxlength="80" autocomplete="off"></label>
+          <div class="times"><label>Role<select id="db-person-role"><option value="colleague">Colleague</option><option value="owner">Owner</option><option value="visitor">Visitor</option></select></label>
+            <label>Preferred language<select id="db-person-language"><option value="en">English</option><option value="de">Deutsch</option></select></label></div>
+          <label class="check"><input type="checkbox" id="db-person-optin"> This person explicitly opted in</label>
+          <button type="button" class="primary" id="db-person-add">Add person</button>
+        </div>
+        <div class="set"><span class="k">Local people and consent</span><div id="db-people" class="dbpeople" aria-live="polite"></div></div>
+      </fieldset>
+    </div>
+
+    <fieldset class="card" style="margin-top:18px">
+      <legend class="label">Editable English and German phrase libraries</legend>
+      <p class="hint">Validated phrase JSON is saved in your per-user DeskBot data directory, never over the version-controlled examples. Edits change local content only; loading or saving never speaks a phrase.</p>
+      <div class="set"><label class="k" for="db-content-language">Library language</label>
+        <select id="db-content-language"><option value="en">English</option><option value="de">Deutsch</option></select></div>
+      <textarea id="dbcontent" spellcheck="false" aria-label="Phrase library JSON"></textarea>
+      <div class="dbactions" style="margin-top:10px">
+        <button type="button" class="primary" id="db-content-save">Validate and save library</button>
+        <button type="button" id="db-content-reset">Restore example library</button>
+        <button type="button" id="db-export">Export local backup</button>
+        <span class="saved" id="db-content-status" role="status"></span>
+      </div>
+      <p class="hint">The JSON schema and stable IDs are documented in <code>server/deskbot_local/content/README.md</code>.</p>
+    </fieldset>
   </section>
 
   <!-- ══ PERSONALITIES ════════════════════════════════════════════════ -->
@@ -1371,6 +1438,12 @@ const FaceKit = (() => {
     if (!r.ok) throw new Error(j.error || r.statusText);
     return j;
   }
+  async function getJSON(path) {
+    const r = await fetch(path);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    return j;
+  }
   const t = $("toast"), popovers = typeof t.showPopover === "function";
   if (popovers) t.popover = "manual";
   let toastTimer;
@@ -1398,6 +1471,7 @@ const FaceKit = (() => {
     placeTabGlow();
     store.set("rocky-tab", tab.id);
     if (tab.id === "t-settings") loadSettings();
+    if (tab.id === "t-deskbot") loadDeskbot();
     if (tab.id === "t-chars") loadChars();
     if (tab.id === "t-faces") loadFaces();
     else if (typeof restoreRobotFace === "function") { $("livemirror").checked = false; restoreRobotFace(); }
@@ -1422,6 +1496,147 @@ const FaceKit = (() => {
   }
   window.addEventListener("resize", placeTabGlow);
   document.fonts?.ready.then(placeTabGlow);
+
+  // ── isolated, local-only DeskBot configuration ─────────────────────────
+  let deskbotLoaded = false;
+  function makeDeskbotField(title, control) {
+    const label = document.createElement("label");
+    label.append(document.createTextNode(title), control);
+    return label;
+  }
+  function makeDeskbotSelect(values, selected) {
+    const select = document.createElement("select");
+    for (const [value, title] of values) {
+      const option = document.createElement("option");
+      option.value = value; option.textContent = title; option.selected = value === selected;
+      select.append(option);
+    }
+    return select;
+  }
+  function renderDeskbotPeople(people, configuredOwner) {
+    const container = $("db-people");
+    container.replaceChildren();
+    const ownerSelect = $("db-owner");
+    ownerSelect.replaceChildren(new Option("No owner configured", ""));
+    for (const person of people) {
+      if (person.role === "owner") ownerSelect.append(new Option(person.display_name, person.person_id));
+      const row = document.createElement("div");
+      row.className = "dbperson";
+      const name = document.createElement("input"); name.type = "text"; name.maxLength = 80; name.value = person.display_name;
+      const role = makeDeskbotSelect([["owner", "Owner"], ["colleague", "Colleague"], ["visitor", "Visitor"]], person.role);
+      const language = makeDeskbotSelect([["en", "English"], ["de", "Deutsch"]], person.preferred_language);
+      const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.checked = person.enabled;
+      const optedIn = document.createElement("input"); optedIn.type = "checkbox"; optedIn.checked = person.opted_in;
+      const save = document.createElement("button"); save.type = "button"; save.textContent = "Save profile";
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "astro"; remove.textContent = "Delete";
+      row.append(makeDeskbotField("Display name", name), makeDeskbotField("Role", role),
+        makeDeskbotField("Preferred language", language), makeDeskbotField("Enabled", enabled),
+        makeDeskbotField("Explicit opt-in", optedIn));
+      const actions = document.createElement("div"); actions.className = "dbactions"; actions.append(save, remove);
+      row.append(actions);
+      save.onclick = async () => {
+        try {
+          await post("/launcher/deskbot/people/update", {
+            person_id: person.person_id, display_name: name.value, role: role.value,
+            preferred_language: language.value, enabled: enabled.checked, opted_in: optedIn.checked,
+          });
+          toast("Person profile saved"); await loadDeskbot();
+        } catch (error) { toast(error.message, true); }
+      };
+      remove.onclick = async () => {
+        if (!window.confirm("Delete this person and all associated local recognition data?")) return;
+        try {
+          await post("/launcher/deskbot/people/delete", { person_id: person.person_id });
+          toast("Person and associated local data deleted"); await loadDeskbot();
+        } catch (error) { toast(error.message, true); }
+      };
+      container.append(row);
+    }
+    ownerSelect.value = configuredOwner ? configuredOwner.person_id : "";
+    if (!people.length) container.textContent = "No local profiles. Adding a profile never enrolls a face.";
+  }
+  async function loadDeskbotContent() {
+    const lang = $("db-content-language").value;
+    const library = await getJSON("/launcher/deskbot/content?language=" + encodeURIComponent(lang));
+    $("dbcontent").value = library.content;
+    $("db-content-status").textContent = library.customized ? "custom local copy" : "example library";
+  }
+  async function loadDeskbot() {
+    try {
+      const data = await getJSON("/launcher/deskbot");
+      const s = data.settings;
+      $("db-language").value = s.language;
+      $("db-events").checked = s.spontaneous_events_enabled;
+      $("db-min").value = s.min_event_interval_minutes;
+      $("db-max").value = s.max_event_interval_minutes;
+      $("db-start").value = s.active_start;
+      $("db-end").value = s.active_end;
+      $("db-quiet").checked = s.quiet_mode;
+      $("db-touch").value = s.touch_sensitivity;
+      $("db-touch-value").value = s.touch_sensitivity;
+      $("db-privacy").checked = s.privacy_mode;
+      $("db-recognition").checked = s.recognition_enabled;
+      $("db-recognition").disabled = s.privacy_mode;
+      renderDeskbotPeople(data.people, data.owner);
+      if (!deskbotLoaded) await loadDeskbotContent();
+      deskbotLoaded = true;
+    } catch (error) { toast(error.message, true); }
+  }
+  $("db-settings-save").onclick = async () => {
+    const changes = {
+      language: $("db-language").value,
+      spontaneous_events_enabled: $("db-events").checked,
+      min_event_interval_minutes: Number($("db-min").value),
+      max_event_interval_minutes: Number($("db-max").value),
+      active_start: $("db-start").value, active_end: $("db-end").value,
+      quiet_mode: $("db-quiet").checked, touch_sensitivity: Number($("db-touch").value),
+      privacy_mode: $("db-privacy").checked, recognition_enabled: $("db-recognition").checked,
+    };
+    try {
+      await post("/launcher/deskbot/settings", { changes });
+      toast("DeskBot settings saved"); await loadDeskbot();
+    } catch (error) { toast(error.message, true); }
+  };
+  $("db-touch").oninput = () => { $("db-touch-value").value = $("db-touch").value; };
+  $("db-privacy").onchange = () => {
+    $("db-recognition").disabled = $("db-privacy").checked;
+    if ($("db-privacy").checked) $("db-recognition").checked = false;
+  };
+  $("db-owner-save").onclick = async () => {
+    try {
+      await post("/launcher/deskbot/owner", { person_id: $("db-owner").value || null });
+      toast("Configured owner saved"); await loadDeskbot();
+    } catch (error) { toast(error.message, true); }
+  };
+  $("db-person-add").onclick = async () => {
+    try {
+      await post("/launcher/deskbot/people", {
+        display_name: $("db-person-name").value,
+        role: $("db-person-role").value,
+        preferred_language: $("db-person-language").value,
+        opted_in: $("db-person-optin").checked,
+      });
+      $("db-person-name").value = ""; $("db-person-optin").checked = false;
+      toast("Local profile added"); await loadDeskbot();
+    } catch (error) { toast(error.message, true); }
+  };
+  $("db-content-language").onchange = () => loadDeskbotContent().catch(error => toast(error.message, true));
+  $("db-content-save").onclick = async () => {
+    try {
+      await post("/launcher/deskbot/content", {
+        language: $("db-content-language").value, content: $("dbcontent").value,
+      });
+      toast("Phrase library validated and saved"); await loadDeskbotContent();
+    } catch (error) { toast(error.message, true); }
+  };
+  $("db-content-reset").onclick = async () => {
+    if (!window.confirm("Replace the local library with the version-controlled example?")) return;
+    try {
+      await post("/launcher/deskbot/content/reset", { language: $("db-content-language").value });
+      toast("Example phrase library restored"); await loadDeskbotContent();
+    } catch (error) { toast(error.message, true); }
+  };
+  $("db-export").onclick = () => { window.location.href = "/launcher/deskbot/export"; };
 
   // sliders fill up to their thumb (Chrome and Safari have no ::range-progress)
   function paintRange(el) {
@@ -2420,7 +2635,7 @@ const FaceKit = (() => {
   // ── start ──────────────────────────────────────────────────────────────
   const clock = () => { $("clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); };
   clock(); setInterval(clock, 1000);
-  const first = $({ "#settings": "t-settings", "#personalities": "t-chars", "#faces": "t-faces", "#log": "t-log" }[location.hash] || store.get("rocky-tab") || "t-live");
+  const first = $({ "#settings": "t-settings", "#deskbot": "t-deskbot", "#personalities": "t-chars", "#faces": "t-faces", "#log": "t-log" }[location.hash] || store.get("rocky-tab") || "t-live");
   selectTab(first || tabs[0]);
 })();
 </script>

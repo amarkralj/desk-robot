@@ -1,5 +1,8 @@
 """Perception: what Rocky notices on camera, worked out on this computer.
 
+Its face landmarks describe visible expression and orientation; they do not
+identify a person or resolve a name.
+
 A background thread watches the robot's camera stream (a few frames a second) with two small open models:
 
   MediaPipe gesture recognizer (Apache-2.0)  hands: an open hand moving side to side is a wave, and a wave wakes

@@ -18,6 +18,7 @@ ignored (not meant for Rocky) is shown without its words: run `python -m brain.m
 from __future__ import annotations
 
 import collections
+import dataclasses
 import http.client
 import json
 import os
@@ -35,6 +36,9 @@ sys.path.insert(0, str(HERE))
 # so it reads .env itself, fresh: with the copy, a key changed in .env stayed the old one until the launcher restarted.
 LAUNCH_ENV = dict(os.environ)
 from brain import characters, config, faces, settings  # noqa: E402  (all standard-library only)
+from deskbot_local.dashboard_content import EditablePhraseLibrary  # noqa: E402
+from deskbot_local.dashboard_settings import DeskBotSettingsStore  # noqa: E402
+from deskbot_local.registry import PersonRegistry, RegistryError  # noqa: E402
 
 PORT = int(os.environ.get("ROCKY_DASHBOARD_PORT", "8766"))
 BIND = "127.0.0.1"
@@ -319,6 +323,50 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 after = 0
             return self._json(200, brain.lines_after(after))
+        if url.path == "/launcher/deskbot":
+            try:
+                registry = PersonRegistry()
+                owner = registry.get_configured_owner()
+                return self._json(200, {
+                    "settings": DeskBotSettingsStore().load(),
+                    "people": [dataclasses.asdict(person) for person in registry.list_people()],
+                    "owner": None if owner is None else dataclasses.asdict(owner),
+                })
+            except (ValueError, RegistryError) as exc:
+                return self._json(400, {"error": str(exc)})
+        if url.path == "/launcher/deskbot/content":
+            language = (q.get("language") or [""])[0]
+            try:
+                text, customized = EditablePhraseLibrary().read(language)
+                return self._json(200, {"language": language, "content": text, "customized": customized})
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+        if url.path == "/launcher/deskbot/export":
+            try:
+                registry = PersonRegistry()
+                libraries = EditablePhraseLibrary()
+                owner = registry.get_configured_owner()
+                bundle = {
+                    "schema_version": 1,
+                    "settings": DeskBotSettingsStore().export(),
+                    "people": [dataclasses.asdict(person) for person in registry.list_people()],
+                    "owner": None if owner is None else dataclasses.asdict(owner),
+                    "content": {lang: json.loads(libraries.read(lang)[0]) for lang in ("de", "en")},
+                }
+                body = json.dumps(bundle, ensure_ascii=False, indent=2).encode("utf-8")
+            except (ValueError, RegistryError) as exc:
+                return self._json(400, {"error": str(exc)})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="deskbot-backup.json"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if url.path == "/launcher/settings":
             defaults_now = {k: getattr(config, k, None) for sec in ("listening", "voice") for k in settings.SCHEMA[sec]}
             return self._json(200, {"settings": settings.load(), "schema": schema_meta(),
@@ -377,6 +425,78 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/launcher/settings":
                 new = settings.update(self._body().get("changes", {}))
                 return self._json(200, {"ok": True, "settings": new, "applied_live": reload_brain()})
+            if path == "/launcher/deskbot/settings":
+                new = DeskBotSettingsStore().update(self._body().get("changes", {}))
+                return self._json(200, {"ok": True, "settings": new})
+            if path == "/launcher/deskbot/owner":
+                body = self._body()
+                if set(body) - {"person_id"}:
+                    raise ValueError("unknown owner field")
+                person_id = body.get("person_id")
+                if person_id is not None and not isinstance(person_id, str):
+                    raise ValueError("person_id must be a string or null")
+                owner = PersonRegistry().set_configured_owner(person_id)
+                return self._json(200, {"ok": True, "owner": None if owner is None else dataclasses.asdict(owner)})
+            if path == "/launcher/deskbot/people":
+                body = self._body()
+                unknown = set(body) - {"display_name", "preferred_language", "role", "opted_in"}
+                if unknown:
+                    raise ValueError(f"unknown person field(s): {', '.join(sorted(unknown))}")
+                opted_in = body.get("opted_in", False)
+                if not isinstance(opted_in, bool):
+                    raise ValueError("opted_in must be true or false")
+                registry = PersonRegistry()
+                person = registry.create_person(
+                    body.get("display_name", ""),
+                    preferred_language=body.get("preferred_language", "en"),
+                    role=body.get("role", "colleague"),
+                )
+                if opted_in:
+                    person = registry.record_opt_in(person.person_id, True)
+                return self._json(201, {"ok": True, "person": dataclasses.asdict(person)})
+            if path == "/launcher/deskbot/people/update":
+                body = self._body()
+                unknown = set(body) - {
+                    "person_id", "display_name", "preferred_language", "role", "enabled", "opted_in",
+                }
+                if unknown:
+                    raise ValueError(f"unknown person field(s): {', '.join(sorted(unknown))}")
+                person_id = body.get("person_id")
+                if not isinstance(person_id, str):
+                    raise ValueError("person_id is required")
+                registry = PersonRegistry()
+                person = registry.get_person(person_id)
+                if "display_name" in body:
+                    person = registry.set_display_name(person_id, body["display_name"])
+                if "preferred_language" in body:
+                    person = registry.set_preferred_language(person_id, body["preferred_language"])
+                if "role" in body:
+                    person = registry.set_role(person_id, body["role"])
+                if "enabled" in body:
+                    person = registry.set_enabled(person_id, body["enabled"])
+                if "opted_in" in body:
+                    person = registry.record_opt_in(person_id, body["opted_in"])
+                return self._json(200, {"ok": True, "person": dataclasses.asdict(person)})
+            if path == "/launcher/deskbot/people/delete":
+                person_id = self._body().get("person_id")
+                if not isinstance(person_id, str):
+                    raise ValueError("person_id is required")
+                if not PersonRegistry().delete_person(person_id):
+                    return self._json(404, {"error": "person not found"})
+                return self._json(200, {"ok": True})
+            if path == "/launcher/deskbot/content":
+                body = self._body()
+                if set(body) - {"language", "content"}:
+                    raise ValueError("unknown phrase-library field")
+                EditablePhraseLibrary().save(body.get("language"), body.get("content"))
+                return self._json(200, {"ok": True})
+            if path == "/launcher/deskbot/content/reset":
+                body = self._body()
+                if set(body) - {"language"}:
+                    raise ValueError("unknown phrase-library field")
+                language = body.get("language")
+                EditablePhraseLibrary().reset(language)
+                return self._json(200, {"ok": True})
             if path == "/launcher/faces/save":
                 body = self._body()
                 pack_id = faces.save_custom(body.get("pack"), str(body.get("id") or "") or None)
@@ -428,7 +548,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._proxy_post(path)
         except ValueError as e:
             return self._json(400, {"error": str(e)})
-        except (RecursionError, TypeError, AttributeError) as e:     # absurdly nested JSON, wrong value types
+        except RegistryError as e:
+            return self._json(400, {"error": str(e)})
+        except (RecursionError, TypeError, AttributeError, UnicodeError) as e:     # absurdly nested JSON, wrong value types
             return self._json(400, {"error": f"bad request: {type(e).__name__}"})
         self._json(404, {"error": "no such control"})
 

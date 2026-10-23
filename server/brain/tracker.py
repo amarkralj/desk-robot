@@ -1,4 +1,7 @@
-"""Tracker: find a face in each camera frame and steer the head toward it.
+"""Tracker: detect faces in camera frames and steer the head toward a face.
+
+This follows a face by its position and size; it does not recognize names or
+identity. Face identity is handled separately by the opt-in local registry.
 
 Runs in its own thread (OpenCV is blocking). For every new frame from Eyes
 it detects faces (YuNet, ~6 ms at 640x480), picks the biggest, works out how
