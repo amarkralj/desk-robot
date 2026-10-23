@@ -20,6 +20,10 @@ server/settings.json
 server/models/*.task
 server/models/rfdetr_*.onnx
 server/models/siglip_*
+server/models/face_recognition_sface_2021dec.onnx
+
+# Local biometric recognition data; never commit embeddings or database journals
+face_templates.sqlite3*
 
 # Face packs made in the dashboard (export one to share it)
 server/faces/custom/

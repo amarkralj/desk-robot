@@ -22,6 +22,7 @@ import dataclasses
 import http.client
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -38,7 +39,19 @@ LAUNCH_ENV = dict(os.environ)
 from brain import characters, config, faces, settings  # noqa: E402  (all standard-library only)
 from deskbot_local.dashboard_content import EditablePhraseLibrary  # noqa: E402
 from deskbot_local.dashboard_settings import DeskBotSettingsStore  # noqa: E402
+from deskbot_local.dashboard_enrollment import (  # noqa: E402
+    FaceEnrollmentSession,
+    OpenCVCameraSource,
+)
+from deskbot_local.identity import (  # noqa: E402
+    FaceIdentityService,
+    FaceRecognitionError,
+    OpenCVSFaceProvider,
+    TemplateStore,
+)
 from deskbot_local.registry import PersonRegistry, RegistryError  # noqa: E402
+from brain.face_detector import MODEL as YUNET_MODEL  # noqa: E402
+from deskbot_local.setup_face_models import MODEL_DIR  # noqa: E402
 
 PORT = int(os.environ.get("ROCKY_DASHBOARD_PORT", "8766"))
 BIND = "127.0.0.1"
@@ -68,6 +81,154 @@ except Exception as e:
 """
 
 IGNORED = "(heard, ignoring:"   # main.py's line for speech that wasn't meant for Rocky
+SFACE_MODEL = MODEL_DIR / "face_recognition_sface_2021dec.onnx"
+_face_enrollment: FaceEnrollmentSession | None = None
+_face_enrollment_source: str | None = None
+_face_enrollment_lock = threading.Lock()
+
+
+def face_enrollment_status() -> dict:
+    """Return safe capability state without opening a camera or loading a model."""
+    settings_now = DeskBotSettingsStore().load()
+    session = _face_enrollment
+    try:
+        import cv2
+
+        opencv_sface = hasattr(cv2, "FaceRecognizerSF")
+    except ImportError:
+        opencv_sface = False
+    model_files_present = YUNET_MODEL.is_file() and SFACE_MODEL.is_file()
+    model_available = model_files_present and opencv_sface
+    return {
+        "model_available": model_available,
+        "recognition_enabled": settings_now["recognition_enabled"],
+        "privacy_mode": settings_now["privacy_mode"],
+        "active": (
+            session is not None and session.status()["active"]
+        ) or _face_enrollment_source == "robot",
+        "robot_camera_available": brain.running() or brain.external(),
+        "camera_source": (
+            session.status().get("source") if session is not None else _face_enrollment_source
+        ),
+        "model": (
+            "OpenCV SFace (local CPU)" if model_available
+            else "Unavailable; local model files are missing" if not model_files_present
+            else "Unavailable; this OpenCV build lacks FaceRecognizerSF"
+        ),
+    }
+
+
+def _start_face_enrollment(body: dict) -> FaceEnrollmentSession:
+    global _face_enrollment
+    if set(body) - {
+        "mode", "source", "camera_index", "display_name", "role",
+        "consent_confirmed", "configure_owner",
+    }:
+        raise ValueError("unknown face-enrollment field")
+    mode = body.get("mode", "enroll")
+    source_name = body.get("source", "mac")
+    if mode not in ("enroll", "test"):
+        raise ValueError("mode must be enroll or test")
+    if source_name != "mac":
+        raise ValueError("robot camera sessions must use the existing tracker pipeline")
+
+    if mode == "enroll":
+        name = body.get("display_name")
+        role = body.get("role")
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+            raise ValueError("display name must contain 1 to 80 characters")
+        if role not in ("owner", "person"):
+            raise ValueError("role must be owner or person")
+        if body.get("consent_confirmed") is not True:
+            raise ValueError("explicit opt-in is required before face enrollment")
+        configure_owner = body.get("configure_owner", False)
+        if not isinstance(configure_owner, bool):
+            raise ValueError("configure_owner must be true or false")
+        if configure_owner and role != "owner":
+            raise ValueError("only an owner profile can be configured as owner")
+    else:
+        name = ""
+        role = "person"
+        configure_owner = False
+        if set(body) - {"mode", "source", "camera_index"}:
+            raise ValueError("recognition test does not accept profile or consent fields")
+
+    camera_index = body.get("camera_index", 0)
+    if isinstance(camera_index, bool) or not isinstance(camera_index, int) or not 0 <= camera_index <= 16:
+        raise ValueError("camera_index must be an integer between 0 and 16")
+    deskbot_settings = DeskBotSettingsStore().load()
+    if deskbot_settings["privacy_mode"]:
+        raise ValueError("Turn off privacy mode explicitly before starting local face enrollment or testing")
+    if not deskbot_settings["recognition_enabled"]:
+        raise ValueError("Enable local identity recognition explicitly before starting this camera workflow")
+    if not YUNET_MODEL.is_file() or not SFACE_MODEL.is_file():
+        raise FaceRecognitionError("local recognition is unavailable; provision the documented YuNet and SFace models")
+    try:
+        import cv2
+    except ImportError as exc:
+        raise FaceRecognitionError("OpenCV is unavailable for local face recognition") from exc
+    if not hasattr(cv2, "FaceRecognizerSF"):
+        raise FaceRecognitionError("this OpenCV build does not include FaceRecognizerSF")
+    with _face_enrollment_lock:
+        if _face_enrollment is not None and _face_enrollment.status()["active"]:
+            raise ValueError("A camera workflow is already active; cancel it before starting another")
+        registry = PersonRegistry()
+        templates = TemplateStore()
+        registry.add_recognition_data_deleter(templates.delete_person)
+        provider = OpenCVSFaceProvider(YUNET_MODEL, SFACE_MODEL)
+        identity_service = FaceIdentityService(
+            registry,
+            provider,
+            templates,
+            minimum_similarity=deskbot_settings["recognition_threshold"],
+            privacy_mode=False,
+        )
+        source = OpenCVCameraSource(camera_index)
+        session = FaceEnrollmentSession(
+            source=source,
+            provider=provider,
+            identity_service=identity_service,
+            registry=registry,
+            mode=mode,
+            camera_source=source_name,
+            display_name=name,
+            role=role,
+            consent_confirmed=body.get("consent_confirmed") is True,
+            make_configured_owner=configure_owner,
+        )
+        session.start()
+        _face_enrollment = session
+        return session
+
+
+def _stop_face_enrollment(session: FaceEnrollmentSession | None = None) -> None:
+    global _face_enrollment, _face_enrollment_source
+    with _face_enrollment_lock:
+        current = _face_enrollment
+        if session is not None and current is not session:
+            return
+        _face_enrollment = None
+        _face_enrollment_source = None
+    if current is not None:
+        current.stop()
+
+
+def _brain_json_post(path: str, payload: dict) -> tuple[int, str, bytes]:
+    body = json.dumps(payload).encode("utf-8")
+    connection, response = brain_request(
+        "POST",
+        path,
+        body,
+        {
+            "X-Rocky-Console": "1",
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        },
+    )
+    try:
+        return response.status, response.getheader("Content-Type") or "application/json", response.read()
+    finally:
+        connection.close()
 
 
 class Brain:
@@ -304,6 +465,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── routes ──
     def do_GET(self) -> None:
+        global _face_enrollment_source
         if not self._local():
             return
         url = urllib.parse.urlparse(self.path)
@@ -334,6 +496,43 @@ class Handler(BaseHTTPRequestHandler):
                 })
             except (ValueError, RegistryError) as exc:
                 return self._json(400, {"error": str(exc)})
+        if url.path == "/launcher/face-enrollment/status":
+            status = face_enrollment_status()
+            if _face_enrollment_source == "robot":
+                try:
+                    touch_code, _, _ = _brain_json_post(
+                        "/api/identity/enrollment/touch", {}
+                    )
+                    if touch_code >= 300:
+                        raise OSError("robot enrollment session is no longer active")
+                    connection, response = brain_request("GET", "/status")
+                    try:
+                        live_status = json.loads(response.read())
+                    finally:
+                        connection.close()
+                    status["session"] = live_status.get("identity_enrollment")
+                    status["robot_camera_available"] = (
+                        live_status.get("frame_age_s") is not None
+                        and live_status["frame_age_s"] <= 2.0
+                    )
+                except (OSError, ValueError, TypeError):
+                    status["session"] = None
+                    status["active"] = False
+                    status["robot_camera_available"] = False
+                    _face_enrollment_source = None
+            elif _face_enrollment is not None:
+                _face_enrollment.touch()
+                status["session"] = _face_enrollment.status()
+            return self._json(200, status)
+        if url.path == "/launcher/face-enrollment/frame":
+            if _face_enrollment_source == "robot":
+                return self._proxy_get("/frame")
+            session = _face_enrollment
+            frame = None if session is None else session.preview()
+            if frame is None:
+                return self._json(503, {"error": "No active camera preview"})
+            session.touch()
+            return self._reply(200, "image/jpeg", frame)
         if url.path == "/launcher/deskbot/content":
             language = (q.get("language") or [""])[0]
             try:
@@ -407,6 +606,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        global _face_enrollment_source
         if not self._local() or not self._console():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -414,9 +614,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/launcher/start":
                 return self._json(200, {"ok": True, "result": brain.start()})
             if path == "/launcher/stop":
-                return self._json(200, {"ok": True, "result": brain.stop()})
+                result = brain.stop()
+                _face_enrollment_source = None
+                return self._json(200, {"ok": True, "result": result})
             if path == "/launcher/restart":
                 brain.stop()
+                _face_enrollment_source = None
                 time.sleep(0.5)
                 return self._json(200, {"ok": True, "result": brain.start()})
             if path == "/launcher/console":
@@ -427,7 +630,41 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "settings": new, "applied_live": reload_brain()})
             if path == "/launcher/deskbot/settings":
                 new = DeskBotSettingsStore().update(self._body().get("changes", {}))
-                return self._json(200, {"ok": True, "settings": new})
+                if new["privacy_mode"] or not new["recognition_enabled"]:
+                    if _face_enrollment_source == "robot":
+                        code, content_type, response_body = _brain_json_post(
+                            "/api/identity/enrollment/cancel", {}
+                        )
+                        if code >= 300:
+                            return self._reply(code, content_type, response_body)
+                        _face_enrollment_source = None
+                    _stop_face_enrollment()
+                applied_live = False
+                if brain.running() or brain.external():
+                    payload = json.dumps({"changes": new}).encode("utf-8")
+                    try:
+                        connection, response = brain_request(
+                            "POST",
+                            "/api/identity/settings",
+                            payload,
+                            {
+                                "X-Rocky-Console": "1",
+                                "Content-Type": "application/json",
+                                "Content-Length": str(len(payload)),
+                            },
+                        )
+                    except OSError as exc:
+                        return self._json(503, {"error": f"settings saved locally but could not update running brain: {exc}"})
+                    response_body = response.read()
+                    applied_live = response.status == 200
+                    connection.close()
+                    if not applied_live:
+                        return self._reply(
+                            response.status,
+                            response.getheader("Content-Type") or "application/json",
+                            response_body,
+                        )
+                return self._json(200, {"ok": True, "settings": new, "applied_live": applied_live})
             if path == "/launcher/deskbot/owner":
                 body = self._body()
                 if set(body) - {"person_id"}:
@@ -458,6 +695,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body()
                 unknown = set(body) - {
                     "person_id", "display_name", "preferred_language", "role", "enabled", "opted_in",
+                    "personalized_greetings_enabled",
                 }
                 if unknown:
                     raise ValueError(f"unknown person field(s): {', '.join(sorted(unknown))}")
@@ -475,14 +713,94 @@ class Handler(BaseHTTPRequestHandler):
                 if "enabled" in body:
                     person = registry.set_enabled(person_id, body["enabled"])
                 if "opted_in" in body:
+                    if body["opted_in"] is False:
+                        registry.add_recognition_data_deleter(TemplateStore().delete_person)
                     person = registry.record_opt_in(person_id, body["opted_in"])
+                if "personalized_greetings_enabled" in body:
+                    person = registry.set_personalized_greetings_enabled(
+                        person_id, body["personalized_greetings_enabled"]
+                    )
                 return self._json(200, {"ok": True, "person": dataclasses.asdict(person)})
             if path == "/launcher/deskbot/people/delete":
                 person_id = self._body().get("person_id")
                 if not isinstance(person_id, str):
                     raise ValueError("person_id is required")
-                if not PersonRegistry().delete_person(person_id):
+                registry = PersonRegistry()
+                registry.add_recognition_data_deleter(TemplateStore().delete_person)
+                if not registry.delete_person(person_id):
                     return self._json(404, {"error": "person not found"})
+                return self._json(200, {"ok": True})
+            if path == "/launcher/deskbot/enroll":
+                body = self._body()
+                if set(body) != {"person_id", "consent_confirmed"}:
+                    raise ValueError("person_id and consent_confirmed are required")
+                if not isinstance(body["person_id"], str) or not body["person_id"].strip():
+                    raise ValueError("person_id must be non-empty text")
+                if body["consent_confirmed"] is not True:
+                    raise ValueError("explicit enrollment confirmation is required")
+                return self._proxy_post(
+                    "/api/identity/enroll",
+                    json.dumps(body).encode("utf-8"),
+                )
+            if path == "/launcher/face-enrollment/start":
+                body = self._body()
+                if body.get("source", "mac") == "robot":
+                    if _face_enrollment is not None and _face_enrollment.status()["active"]:
+                        raise ValueError("A camera workflow is already active; cancel it before starting another")
+                    if _face_enrollment_source is not None:
+                        raise ValueError("A camera workflow is already active; cancel it before starting another")
+                    if not (brain.running() or brain.external()):
+                        raise ValueError("Start the server explicitly and connect the robot camera before choosing this source")
+                    remote_body = {key: value for key, value in body.items() if key not in {"source", "camera_index"}}
+                    code, content_type, response_body = _brain_json_post(
+                        "/api/identity/enrollment/start", remote_body
+                    )
+                    if code < 300:
+                        _face_enrollment_source = "robot"
+                    return self._reply(code, content_type, response_body)
+                session = _start_face_enrollment(body)
+                return self._json(200, {"ok": True, "session": session.status()})
+            if path == "/launcher/face-enrollment/capture":
+                body = self._body()
+                if set(body) != {"step"}:
+                    raise ValueError("step is required")
+                if _face_enrollment_source == "robot":
+                    code, content_type, response_body = _brain_json_post(
+                        "/api/identity/enrollment/capture", body
+                    )
+                    return self._reply(code, content_type, response_body)
+                session = _face_enrollment
+                if session is None:
+                    raise ValueError("No active enrollment session")
+                return self._json(200, {"ok": True, "session": session.capture_pose(body["step"])})
+            if path == "/launcher/face-enrollment/save":
+                body = self._body()
+                if set(body) != {"confirmed"}:
+                    raise ValueError("final confirmation is required")
+                if _face_enrollment_source == "robot":
+                    code, content_type, response_body = _brain_json_post(
+                        "/api/identity/enrollment/save", body
+                    )
+                    if code < 300:
+                        _face_enrollment_source = None
+                    return self._reply(code, content_type, response_body)
+                session = _face_enrollment
+                if session is None:
+                    raise ValueError("No active enrollment session")
+                result = session.save(body["confirmed"])
+                _stop_face_enrollment(session)
+                return self._json(201, {"ok": True, "person": result})
+            if path == "/launcher/face-enrollment/cancel":
+                if self._body():
+                    raise ValueError("cancel does not accept fields")
+                if _face_enrollment_source == "robot":
+                    code, content_type, response_body = _brain_json_post(
+                        "/api/identity/enrollment/cancel", {}
+                    )
+                    if code < 300:
+                        _face_enrollment_source = None
+                    return self._reply(code, content_type, response_body)
+                _stop_face_enrollment()
                 return self._json(200, {"ok": True})
             if path == "/launcher/deskbot/content":
                 body = self._body()
@@ -550,6 +868,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": str(e)})
         except RegistryError as e:
             return self._json(400, {"error": str(e)})
+        except FaceRecognitionError as e:
+            return self._json(503, {"error": str(e)})
+        except sqlite3.Error as e:
+            return self._json(503, {"error": f"local recognition storage is unavailable: {e}"})
+        except (OSError, RuntimeError) as e:
+            return self._json(503, {"error": f"local camera workflow unavailable: {e}"})
         except (RecursionError, TypeError, AttributeError, UnicodeError) as e:     # absurdly nested JSON, wrong value types
             return self._json(400, {"error": f"bad request: {type(e).__name__}"})
         self._json(404, {"error": "no such control"})
@@ -581,11 +905,14 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             c.close()
 
-    def _proxy_post(self, path: str) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
-        if not 0 <= length <= 64 * 1024:
+    def _proxy_post(self, path: str, body: bytes | None = None) -> None:
+        if body is None:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 <= length <= 64 * 1024:
+                return self._json(400, {"error": "bad content length"})
+            body = self.rfile.read(length)
+        elif len(body) > 64 * 1024:
             return self._json(400, {"error": "bad content length"})
-        body = self.rfile.read(length)
         try:
             c, r = brain_request("POST", path, body, {"X-Rocky-Console": "1", "Content-Type": "application/json",
                                                       "Content-Length": str(len(body))})
@@ -607,6 +934,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        _stop_face_enrollment()
         if brain.running():
             brain.stop()
 

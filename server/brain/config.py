@@ -84,6 +84,9 @@ PORT = 8765
 # The console page has sliders for level / bass cut / presence that apply
 # live; set the winners here to keep them.
 TTS_VOICE_ID = "6dd07916890445e59c5f019ad0fc7879"
+# Optional language-specific voices; an empty value preserves the legacy voice.
+TTS_VOICE_ID_EN = os.environ.get("TTS_VOICE_ID_EN", "").strip()
+TTS_VOICE_ID_DE = os.environ.get("TTS_VOICE_ID_DE", "").strip()
 TTS_MODEL = ""    # Fish's model (its `model` header): "" = Fish's default, "drama-3" = Drama 3. A character sets its own
 TTS_ACTING = False  # the voice model performs [directions] and <whisper>...</whisper> (Drama 3), so they're kept in
 TTS_TEMPERATURE = 0.4
@@ -107,6 +110,9 @@ TTS_AUTO_PRESENCE_MAX = 6.0
 # Text-to-speech. The voice comes from Fish Audio (TTS_VOICE_ID above).
 TTS_FALLBACK_VOICE = "Fred"  # built-in voice used until Fish Audio is set up: a macOS `say`
                              # voice name (`say -v ?` lists them); Windows and Linux use their default
+TTS_FALLBACK_VOICE_EN = os.environ.get("TTS_FALLBACK_VOICE_EN", TTS_FALLBACK_VOICE).strip()
+TTS_FALLBACK_VOICE_DE = os.environ.get("TTS_FALLBACK_VOICE_DE", "Anna").strip()
+TTS_LANGUAGE = "en"  # explicit language used for speech voice selection; no text language guessing
 # Loudness. Fish's level wanders from line to line, so the audio goes through
 # an automatic gain control (mouth.Leveler) that holds it near TTS_LEVEL
 # (RMS, 0..1) using at most TTS_MAX_GAIN of boost, with a soft limiter on

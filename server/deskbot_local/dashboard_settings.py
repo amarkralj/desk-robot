@@ -24,6 +24,11 @@ DEFAULTS: dict[str, Any] = {
     "touch_sensitivity": 50,
     "privacy_mode": True,
     "recognition_enabled": False,
+    "recognition_threshold": 0.5,
+    "recognition_stable_frames": 4,
+    "presence_reset_frames": 5,
+    "owner_greeting_cooldown_seconds": 900,
+    "automatic_greetings_enabled": False,
 }
 
 
@@ -103,6 +108,7 @@ def _clean_setting(key: str, value: Any) -> Any:
         "quiet_mode",
         "privacy_mode",
         "recognition_enabled",
+        "automatic_greetings_enabled",
     }:
         if not isinstance(value, bool):
             raise ValueError(f"{key} must be true or false")
@@ -118,5 +124,17 @@ def _clean_setting(key: str, value: Any) -> Any:
     if key == "touch_sensitivity":
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
             raise ValueError("touch_sensitivity must be a whole number from 0 to 100")
+        return value
+    if key == "recognition_threshold":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError("recognition_threshold must be a number from 0 to 1")
+        return float(value)
+    if key in {"recognition_stable_frames", "presence_reset_frames"}:
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 30:
+            raise ValueError(f"{key} must be a whole number from 1 to 30")
+        return value
+    if key == "owner_greeting_cooldown_seconds":
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 86400:
+            raise ValueError("owner_greeting_cooldown_seconds must be a whole number from 0 to 86400")
         return value
     raise ValueError(f"unsupported DeskBot setting: {key}")

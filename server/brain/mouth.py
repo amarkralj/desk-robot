@@ -29,6 +29,7 @@ import time
 import urllib.request
 import wave
 from collections.abc import Iterator
+from typing import Literal
 
 import certifi
 
@@ -38,10 +39,28 @@ from . import config
 
 SAMPLE_RATE = 16_000
 FISH_TTS_URL = "https://api.fish.audio/v1/tts"
+Language = Literal["en", "de"]
 
 
-def fish_available() -> bool:
-    return bool(config.TTS_VOICE_ID and os.environ.get("FISH_AUDIO_API_KEY"))
+def voice_id_for_language(language: Language) -> str:
+    """Choose a configured language voice, falling back to the legacy ID."""
+    if language not in ("en", "de"):
+        raise ValueError("language must be 'en' or 'de'")
+    specific = config.TTS_VOICE_ID_EN if language == "en" else config.TTS_VOICE_ID_DE
+    return specific or config.TTS_VOICE_ID
+
+
+def builtin_voice_for_language(language: Language) -> str:
+    """Choose the configured OS voice for the explicit speech language."""
+    if language == "en":
+        return config.TTS_FALLBACK_VOICE_EN
+    if language == "de":
+        return config.TTS_FALLBACK_VOICE_DE
+    raise ValueError("language must be 'en' or 'de'")
+
+
+def fish_available(language: Language = "en") -> bool:
+    return bool(voice_id_for_language(language) and os.environ.get("FISH_AUDIO_API_KEY"))
 
 
 _MARKUP = re.compile(r"[*_`#~<>\[\]{}|\\]")
@@ -96,12 +115,13 @@ def clean_for_tts(text: str) -> str:
     return text
 
 
-def _fish_stream(text: str) -> Iterator[bytes]:
+def _fish_stream(text: str, voice_id: str | None = None) -> Iterator[bytes]:
     """Raw 16 kHz PCM from Fish Audio, yielded as the server produces it."""
+    voice_id = voice_id or config.TTS_VOICE_ID
     body = json.dumps(
         {
             "text": text,
-            "reference_id": config.TTS_VOICE_ID,
+            "reference_id": voice_id,
             "format": "pcm",          # headerless s16le at sample_rate: nothing to parse
             "sample_rate": SAMPLE_RATE,
             "latency": "balanced",    # a little faster to the first byte than "normal"
@@ -435,7 +455,7 @@ $s.Dispose()
 """
 
 
-def _synthesize_builtin(text: str) -> bytes:
+def _synthesize_builtin(text: str, language: Language = "en") -> bytes:
     """The computer's own voice as 16 kHz s16le PCM. Text always goes in on
     stdin, never as an argument, so a reply starting with "-" can't turn
     into options ("-f /etc/hosts" would make `say` read a file)."""
@@ -443,7 +463,7 @@ def _synthesize_builtin(text: str) -> bytes:
         path = f.name
     try:
         if sys.platform == "darwin":
-            cmd = ["say", "-v", config.TTS_FALLBACK_VOICE, "-o", path, "--data-format=LEI16@16000"]
+            cmd = ["say", "-v", builtin_voice_for_language(language), "-o", path, "--data-format=LEI16@16000"]
         elif sys.platform == "win32":
             cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", _WINDOWS_TTS, path]
         elif shutil.which("espeak-ng") or shutil.which("espeak"):
@@ -458,11 +478,20 @@ def _synthesize_builtin(text: str) -> bytes:
     return _wav_to_pcm16k(wav)
 
 
-def stream(text: str, leveler: Leveler | None = None) -> Iterator[bytes]:
+def stream(
+    text: str,
+    leveler: Leveler | None = None,
+    *,
+    language: Language = "en",
+    local_only: bool = False,
+    require_fish: bool = False,
+) -> Iterator[bytes]:
     """Rocky's words as 16 kHz mono s16le PCM chunks, yielded as they're made.
-    Fish Audio when it's set up and reachable, else the computer's own voice
-    (all at once). Loudness is steadied by `leveler` (a fresh one if none is
-    given). A saved copy goes to debug/tts/ when DEBUG_SAVE_TTS is on."""
+    Fish Audio when configured and permitted, else the language's computer
+    voice (all at once). ``local_only`` guarantees no Fish Audio request;
+    ``require_fish`` prevents a failed Fish request from silently using a
+    different voice. A saved copy goes to debug/tts/ when DEBUG_SAVE_TTS is on."""
+    voice_id = voice_id_for_language(language)
     acting = config.TTS_ACTING
     plain = clean_for_tts(without_cues(text))   # the built-in voice would read cues out
     text = clean_for_acting(text) if acting else plain
@@ -474,16 +503,20 @@ def stream(text: str, leveler: Leveler | None = None) -> Iterator[bytes]:
     try:
         chunks: Iterator[bytes] | None = None
         first = b""
-        if fish_available():
+        if not local_only and fish_available(language):
             try:
-                chunks = _fish_stream(text)
+                chunks = _fish_stream(text, voice_id)
                 first = next(chunks, b"")
             except Exception as e:  # network, auth, bad voice id... still speak
+                if require_fish:
+                    raise RuntimeError("Fish Audio voice test failed; check voice configuration and service status") from e
                 print(f"(fish audio failed, using the built-in voice: {e})")
                 chunks = None
         if chunks is None:
+            if require_fish:
+                raise RuntimeError("Fish Audio voice or FISH_AUDIO_API_KEY is not configured")
             try:
-                first = _synthesize_builtin(plain)
+                first = _synthesize_builtin(plain, language)
             except NoBuiltinVoice as e:
                 print(f"(cannot speak: {e})")
                 return

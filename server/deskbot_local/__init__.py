@@ -44,6 +44,7 @@ from .registry import (
     default_data_directory,
 )
 from .scheduler import ScheduledEvent, Scheduler, SchedulerContext, SchedulerSettings
+from .recognition_runtime import OwnerGreeting, RecognitionRuntime
 
 __all__ = [
     "Action",
@@ -70,9 +71,11 @@ __all__ = [
     "PersonRegistry",
     "PersonRole",
     "OpenCVSFaceProvider",
+    "OwnerGreeting",
     "PhraseCatalog",
     "PhraseDataError",
     "RegistryError",
+    "RecognitionRuntime",
     "RobotActionAdapter",
     "ScheduledEvent",
     "Scheduler",

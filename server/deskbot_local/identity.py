@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import math
 import os
+import base64
+import binascii
 import sqlite3
 import struct
+import sys
+import threading
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -23,6 +27,57 @@ IdentityStatus = Literal["recognized", "unknown", "disabled"]
 
 class FaceRecognitionError(Exception):
     """A provider or local recognition-template operation failed."""
+
+
+class KeyStorageError(FaceRecognitionError):
+    """The locally protected encryption key is unavailable."""
+
+
+class KeyProvider(Protocol):
+    """Store one local encryption key using an operating-system key store."""
+
+    def get_or_create_key(self) -> bytes: ...
+
+
+class MacKeychainKeyProvider:
+    """Retrieve the template key from the current user's macOS Keychain."""
+
+    def __init__(self, account: str) -> None:
+        if sys.platform != "darwin":
+            raise KeyStorageError("biometric template encryption requires macOS Keychain")
+        self.account = account
+        try:
+            import keyring.backends.macOS
+            from keyring.errors import KeyringError
+        except ImportError as exc:
+            raise KeyStorageError(
+                "install server/requirements-identity.txt to use encrypted recognition"
+            ) from exc
+        try:
+            self._backend = keyring.backends.macOS.Keyring()
+        except (AttributeError, OSError, RuntimeError) as exc:
+            raise KeyStorageError("could not initialize the macOS Keychain backend") from exc
+        self._keyring_error = KeyringError
+
+    def get_or_create_key(self) -> bytes:
+        try:
+            encoded = self._backend.get_password("DeskBot face templates", self.account)
+            if encoded is None:
+                key = os.urandom(32)
+                self._backend.set_password(
+                    "DeskBot face templates",
+                    self.account,
+                    base64.b64encode(key).decode("ascii"),
+                )
+                return key
+            key = base64.b64decode(encoded, validate=True)
+            if len(key) != 32:
+                raise KeyStorageError("the Keychain template key has an invalid length")
+            return key
+        except KeyStorageError:
+            raise
+        except (self._keyring_error, binascii.Error, OSError, TypeError, ValueError) as exc:
+            raise KeyStorageError("could not access the macOS Keychain template key") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,14 +111,22 @@ class FaceProvider(Protocol):
 
 
 class TemplateStore:
-    """Per-user SQLite store for approved recognition vectors, never images."""
+    """Per-user SQLite store for AEAD-encrypted vectors, never images."""
 
-    def __init__(self, database_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        database_path: Path | str | None = None,
+        *,
+        key_provider: KeyProvider | None = None,
+    ) -> None:
         self.database_path = (
             Path(database_path)
             if database_path is not None
             else default_data_directory() / "face_templates.sqlite3"
         )
+        self._key_provider = key_provider
+        self._cached_key: bytes | None = None
+        self._key_lock = threading.Lock()
         self.database_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name == "posix":
             self.database_path.parent.chmod(0o700)
@@ -79,10 +142,35 @@ class TemplateStore:
                     model_id TEXT NOT NULL,
                     dimensions INTEGER NOT NULL CHECK(dimensions > 0),
                     vector BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(face_templates)").fetchall()
+            }
+            if "nonce" not in columns:
+                connection.execute("ALTER TABLE face_templates ADD COLUMN nonce BLOB")
+                legacy = connection.execute(
+                    """
+                    SELECT template_id, person_id, model_id, dimensions, vector
+                    FROM face_templates ORDER BY template_id
+                    """
+                ).fetchall()
+                for template_id, person_id, model_id, dimensions, payload in legacy:
+                    if dimensions <= 0 or len(payload) != dimensions * 4:
+                        raise FaceRecognitionError(
+                            "legacy face template is malformed; remove the template database and re-enroll"
+                        )
+                    self._encrypt_row(
+                        connection,
+                        template_id,
+                        person_id,
+                        model_id,
+                        dimensions,
+                        bytes(payload),
+                    )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS face_templates_person_idx ON face_templates(person_id)"
             )
@@ -90,6 +178,7 @@ class TemplateStore:
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=5.0)
+        connection.execute("PRAGMA secure_delete = ON")
         try:
             yield connection
             connection.commit()
@@ -106,27 +195,51 @@ class TemplateStore:
         except (OverflowError, struct.error) as exc:
             raise ValueError("face embedding values must fit in a float32 vector") from exc
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
-                INSERT INTO face_templates (person_id, model_id, dimensions, vector)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO face_templates (person_id, model_id, dimensions, vector, nonce)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (person_id, model_id, len(vector), payload),
+                (person_id, model_id, len(vector), b"", b""),
+            )
+            self._encrypt_row(
+                connection,
+                cursor.lastrowid,
+                person_id,
+                model_id,
+                len(vector),
+                payload,
             )
 
     def list_all(self, model_id: str) -> list[tuple[str, tuple[float, ...]]]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT person_id, dimensions, vector
+                SELECT template_id, person_id, dimensions, vector, nonce
                 FROM face_templates WHERE model_id = ? ORDER BY template_id
                 """,
                 (model_id,),
             ).fetchall()
+        if not rows:
+            return []
         results: list[tuple[str, tuple[float, ...]]] = []
-        for person_id, dimensions, payload in rows:
-            if dimensions <= 0 or len(payload) != dimensions * 4:
-                raise FaceRecognitionError("stored face template has an invalid vector payload")
+        key = self._get_key()
+        aesgcm = self._aesgcm(key)
+        for template_id, person_id, dimensions, payload, nonce in rows:
+            if dimensions <= 0 or len(payload) != dimensions * 4 + 16 or nonce is None or len(nonce) != 12:
+                raise FaceRecognitionError("stored encrypted face template has an invalid payload")
+            try:
+                payload = aesgcm.decrypt(
+                    bytes(nonce),
+                    bytes(payload),
+                    self._associated_data(template_id, person_id, model_id, dimensions),
+                )
+            except self._invalid_tag_type() as exc:
+                raise FaceRecognitionError(
+                    "stored face template authentication failed; the data or Keychain key may be damaged"
+                ) from exc
+            if len(payload) != dimensions * 4:
+                raise FaceRecognitionError("decrypted face template has an invalid vector payload")
             vector = struct.unpack(f"<{dimensions}f", payload)
             if any(not math.isfinite(value) for value in vector):
                 raise FaceRecognitionError("stored face template contains non-finite values")
@@ -136,6 +249,62 @@ class TemplateStore:
     def delete_person(self, person_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM face_templates WHERE person_id = ?", (person_id,))
+
+    def _encrypt_row(
+        self,
+        connection: sqlite3.Connection,
+        template_id: int,
+        person_id: str,
+        model_id: str,
+        dimensions: int,
+        payload: bytes,
+    ) -> None:
+        nonce = os.urandom(12)
+        ciphertext = self._aesgcm(self._get_key()).encrypt(
+            nonce,
+            payload,
+            self._associated_data(template_id, person_id, model_id, dimensions),
+        )
+        connection.execute(
+            "UPDATE face_templates SET vector = ?, nonce = ? WHERE template_id = ?",
+            (ciphertext, nonce, template_id),
+        )
+
+    def _get_key(self) -> bytes:
+        with self._key_lock:
+            if self._cached_key is not None:
+                return self._cached_key
+            if self._key_provider is None:
+                self._key_provider = MacKeychainKeyProvider(str(self.database_path.resolve()))
+            key = self._key_provider.get_or_create_key()
+            if not isinstance(key, bytes) or len(key) != 32:
+                raise KeyStorageError("template key provider must return exactly 32 bytes")
+            self._cached_key = key
+            return self._cached_key
+
+    @staticmethod
+    def _aesgcm(key: bytes):
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        except ImportError as exc:
+            raise FaceRecognitionError(
+                "install server/requirements-identity.txt to use encrypted recognition"
+            ) from exc
+        return AESGCM(key)
+
+    @staticmethod
+    def _invalid_tag_type():
+        try:
+            from cryptography.exceptions import InvalidTag
+        except ImportError as exc:
+            raise FaceRecognitionError(
+                "install server/requirements-identity.txt to use encrypted recognition"
+            ) from exc
+        return InvalidTag
+
+    @staticmethod
+    def _associated_data(template_id: int, person_id: str, model_id: str, dimensions: int) -> bytes:
+        return f"{template_id}\0{person_id}\0{model_id}\0{dimensions}".encode("utf-8")
 
     @staticmethod
     def _validate_embedding(embedding: Sequence[float]) -> tuple[float, ...]:
@@ -200,13 +369,25 @@ class FaceIdentityService:
         """Explicitly enroll one face for an opted-in profile; frame is not retained."""
         if self.privacy_mode:
             raise ConsentRequiredError("disable privacy mode before explicit enrollment")
-        person = self.registry.get_person(person_id)
-        if not person.enabled or not person.opted_in:
-            raise ConsentRequiredError("an enabled profile with explicit opt-in is required")
         faces = self.provider.detect_faces(frame)
         if len(faces) != 1:
             raise FaceRecognitionError("enrollment requires exactly one detected face")
-        embedding = self.provider.create_embedding(frame, faces[0])
+        self.enroll_detected_face(person_id, frame, faces[0])
+
+    def enroll_detected_face(self, person_id: str, frame: object, face: FaceRegion) -> None:
+        """Enroll an explicitly consented face already detected in this same frame."""
+        if self.privacy_mode:
+            raise ConsentRequiredError("disable privacy mode before explicit enrollment")
+        embedding = self.provider.create_embedding(frame, face)
+        self.enroll_embedding(person_id, embedding)
+
+    def enroll_embedding(self, person_id: str, embedding: Sequence[float]) -> None:
+        """Store one supplied in-memory embedding after checking consent and privacy state."""
+        if self.privacy_mode:
+            raise ConsentRequiredError("disable privacy mode before explicit enrollment")
+        person = self.registry.get_person(person_id)
+        if not person.enabled or not person.opted_in:
+            raise ConsentRequiredError("an enabled profile with explicit opt-in is required")
         self.template_store.add(person_id, self.provider.model_id, embedding)
         self.registry.enroll(person_id)
 
@@ -273,6 +454,8 @@ class OpenCVSFaceProvider:
         self,
         detector_model: Path | str,
         recognizer_model: Path | str,
+        *,
+        detector: object | None = None,
     ) -> None:
         detector_path = Path(detector_model)
         recognizer_path = Path(recognizer_model)
@@ -284,32 +467,29 @@ class OpenCVSFaceProvider:
         except ImportError as exc:
             raise RuntimeError("OpenCV is required to use OpenCVSFaceProvider") from exc
         self._cv2 = cv2
-        self._detector = cv2.FaceDetectorYN.create(
-            str(detector_path),
-            "",
-            (320, 320),
-            0.6,
-            0.3,
-            5000,
-            cv2.dnn.DNN_BACKEND_OPENCV,
-            cv2.dnn.DNN_TARGET_CPU,
-        )
+        if detector is None:
+            from brain.face_detector import YuNetFaceDetector
+
+            detector = YuNetFaceDetector(detector_path)
+        self._detector = detector
         self._recognizer = cv2.FaceRecognizerSF.create(
             str(recognizer_path),
             "",
             cv2.dnn.DNN_BACKEND_OPENCV,
             cv2.dnn.DNN_TARGET_CPU,
         )
+        self._recognizer_lock = threading.Lock()
 
     def detect_faces(self, frame: object) -> tuple[FaceRegion, ...]:
-        height, width = self._frame_size(frame)
-        self._detector.setInputSize((width, height))
-        _status, faces = self._detector.detect(frame)
-        if faces is None:
-            return ()
+        detect_rows = getattr(self._detector, "detect_rows", None)
+        if not callable(detect_rows):
+            raise FaceRecognitionError("the shared YuNet detector does not provide aligned face rows")
+        faces = detect_rows(frame)
         regions = []
         for row in faces:
             values = tuple(float(value) for value in row)
+            if len(values) != 15:
+                raise FaceRecognitionError("YuNet returned a face row with unexpected dimensions")
             regions.append(
                 FaceRegion(
                     box=tuple(int(round(value)) for value in values[:4]),
@@ -327,8 +507,9 @@ class OpenCVSFaceProvider:
         import numpy as np
 
         detector_row = np.asarray(face.provider_data, dtype=np.float32).reshape(1, 15)
-        aligned = self._recognizer.alignCrop(frame, detector_row)
-        embedding = self._recognizer.feature(aligned).reshape(-1)
+        with self._recognizer_lock:
+            aligned = self._recognizer.alignCrop(frame, detector_row)
+            embedding = self._recognizer.feature(aligned).reshape(-1)
         return tuple(float(value) for value in embedding)
 
     @staticmethod

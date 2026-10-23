@@ -28,6 +28,7 @@ PATH = Path(__file__).resolve().parent.parent / "settings.json"
 SCHEMA: dict[str, dict[str, tuple]] = {
     "rocky": {
         "human_name":    ("", "str", 40),                 # empty = HUMAN_NAME from .env, else "friend" (restart)
+        "speech_language": ("en", "choice", ("en", "de")),
         "awake_seconds": (60.0, "float", (10.0, 600.0)),  # how long he stays awake after you talk
         "volume":        (0.7, "float", (0.0, 1.0)),
         "speaker_out":   ("robot", "choice", ("robot", "computer")),

@@ -360,6 +360,14 @@
               padding: 10px; border: 1px solid var(--line); background: var(--well); }
   .dbperson label, .dbform label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
   .dbperson .check, .dbform .check { display: flex; align-items: center; }
+  .enrollgrid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr); gap: 18px; }
+  .enrollpreview { width: 100%; min-height: 220px; max-height: 55vh; object-fit: contain; background: var(--well);
+    border: 1px solid var(--line-strong); border-radius: 4px; }
+  .enrollsteps { display: grid; gap: 7px; padding-left: 22px; }
+  .enrollsteps li[aria-current="step"] { color: var(--amber); font-weight: 600; }
+  .enrollsteps li[data-done="true"] { color: var(--ok); }
+  .peoplecard { display: grid; gap: 8px; padding: 12px 0; border-top: 1px dashed var(--line); }
+  @media (max-width: 760px) { .enrollgrid { grid-template-columns: 1fr; } }
   .dbactions { display: flex; gap: 8px; flex-wrap: wrap; }
   #dbcontent { min-height: 360px; font: 12px/1.5 var(--mono); }
 
@@ -584,6 +592,7 @@
     <button type="button" role="tab" id="t-live" aria-controls="p-live" aria-selected="true">Live</button>
     <button type="button" role="tab" id="t-settings" aria-controls="p-settings" aria-selected="false" tabindex="-1">Settings</button>
     <button type="button" role="tab" id="t-deskbot" aria-controls="p-deskbot" aria-selected="false" tabindex="-1">DeskBot</button>
+    <button type="button" role="tab" id="t-people" aria-controls="p-people" aria-selected="false" tabindex="-1">People</button>
     <button type="button" role="tab" id="t-chars" aria-controls="p-chars" aria-selected="false" tabindex="-1">Personalities</button>
     <button type="button" role="tab" id="t-faces" aria-controls="p-faces" aria-selected="false" tabindex="-1">Faces</button>
     <button type="button" role="tab" id="t-log" aria-controls="p-log" aria-selected="false" tabindex="-1">Log</button>
@@ -755,6 +764,9 @@
           <div class="set"><label class="k" for="hname">Your name <span class="badge">restart</span></label>
             <input type="text" id="hname" name="rocky.human_name" maxlength="40" autocomplete="given-name" aria-describedby="hnamehint">
             <p class="hint" id="hnamehint">What he calls you. Empty = HUMAN_NAME from server/.env, else "friend".</p></div>
+          <div class="set"><label class="k" for="speech-language">Speech voice language</label>
+            <select id="speech-language" name="rocky.speech_language"><option value="en">English</option><option value="de">German</option></select>
+            <p class="hint">Selects the voice for generated speech. This is an explicit setting; replies are not language-guessed.</p></div>
           <div class="set"><label class="k" for="awake">Stays awake after you talk</label>
             <div class="slide"><input type="range" id="awake" name="rocky.awake_seconds" min="10" max="600" step="5"><output for="awake" data-unit=" s"></output></div></div>
           <div class="set"><label class="k" for="vol">Speaker volume</label>
@@ -830,10 +842,18 @@
         <legend class="label">Privacy and configured owner</legend>
         <label class="check"><input type="checkbox" id="db-privacy"> Privacy mode (identity recognition stays disabled)</label>
         <label class="check"><input type="checkbox" id="db-recognition"> Recognition preference enabled</label>
-        <p class="hint">Recognition requires privacy mode to be off. Saving these preferences does not access a camera or run recognition.</p>
+        <label class="check"><input type="checkbox" id="db-auto-greetings"> Automatic German owner greetings enabled</label>
+        <div class="set"><span class="k">Matching safeguards</span>
+          <div class="times"><label>Similarity threshold<input id="db-threshold" type="number" min="0" max="1" step="0.01"></label>
+            <label>Stable frames<input id="db-stable-frames" type="number" min="1" max="30" step="1"></label></div>
+          <div class="times"><label>Frames before presence resets<input id="db-reset-frames" type="number" min="1" max="30" step="1"></label>
+            <label>Greeting cooldown (seconds)<input id="db-greeting-cooldown" type="number" min="0" max="86400" step="30"></label></div></div>
+        <p class="hint">Recognition requires privacy mode to be off. Saving never starts the brain or camera; if the brain is already running, the explicit preference applies to its existing frame stream. Similarity is a score, not a probability.</p>
+        <p class="hint" id="db-recognition-status" role="status">Identity status is available when the brain is running.</p>
         <div class="set"><label class="k" for="db-owner">Configured owner (identity is never guessed)</label>
           <select id="db-owner"><option value="">No owner configured</option></select>
-          <button type="button" id="db-owner-save">Save configured owner</button></div>
+          <button type="button" id="db-owner-save">Save configured owner</button>
+          <button type="button" id="db-owner-enroll">Enroll owner from latest robot frame</button></div>
         <div class="set dbform">
           <span class="k">Add a local person</span>
           <label>Display name<input id="db-person-name" type="text" maxlength="80" autocomplete="off"></label>
@@ -860,6 +880,72 @@
       </div>
       <p class="hint">The JSON schema and stable IDs are documented in <code>server/deskbot_local/content/README.md</code>.</p>
     </fieldset>
+  </section>
+
+  <!-- ══ LOCAL PEOPLE AND FACE ENROLLMENT ═════════════════════════════ -->
+  <section role="tabpanel" id="p-people" aria-labelledby="t-people" lang="de" hidden>
+    <h2 class="label">Personen / Gesicht einrichten</h2>
+    <p class="notice">Gesichtserkennung ist eine lokale Komfortfunktion, keine sichere Authentifizierung. Jede Person muss selbst ausdrücklich zustimmen. Gespeichert werden nur verschlüsselte Gesichtsmerkmale und der notwendige Profilname/Rolle; keine Fotos oder Videobilder. Du kannst ein Profil und alle zugehörigen Vorlagen jederzeit löschen. Biometrische Identifizierung ist nach <a href="https://eur-lex.europa.eu/legal-content/EN-DE/TXT/?uri=CELEX%3A32016R0679" rel="noreferrer">DSGVO Artikel 9</a> besonders geschützt.</p>
+    <div class="card">
+      <h3 class="label">Verfügbarkeit</h3>
+      <p class="hint" id="fe-capability" role="status" aria-live="polite">Prüfe lokale Modelle …</p>
+      <p class="hint">Die Kamera wird erst nach deiner Aktion geöffnet. Beim Abbrechen oder Verlassen dieses Bereichs wird die Mac-Webcam freigegeben. Für den Roboter muss dessen Server bereits manuell laufen.</p>
+    </div>
+    <div class="enrollgrid" style="margin-top:18px">
+      <div class="card">
+        <h3 class="label">Person hinzufügen</h3>
+        <form id="fe-form" class="stack">
+          <label class="dbform">Name / Anzeigename<input id="fe-name" type="text" maxlength="80" autocomplete="off" required></label>
+          <label class="dbform">Rolle<select id="fe-role">
+            <option value="person">Person</option>
+            <option value="owner">Owner (Begrüßungsname: Chef)</option>
+          </select></label>
+          <label class="dbform">Kameraquelle<select id="fe-source">
+            <option value="mac">Mac-Webcam</option>
+            <option value="robot">Roboterkamera (laufender Server erforderlich)</option>
+          </select></label>
+          <label class="dbform" id="fe-camera-index-label">Mac-Kameraindex<input id="fe-camera-index" type="number" min="0" max="16" step="1" value="0"></label>
+          <label class="check"><input id="fe-consent" type="checkbox" required>
+            Ich habe die ausdrückliche Einwilligung dieser Person zur lokalen Verarbeitung und Speicherung ihrer biometrischen Merkmale.</label>
+          <label class="check" id="fe-owner-choice" hidden><input id="fe-configure-owner" type="checkbox">
+            Diese Owner-Person ausdrücklich als DeskBot-Eigentümer konfigurieren (Begrüßung mit „Chef“).</label>
+          <p class="hint">Der Owner wird niemals anhand eines unbekannten Gesichts bestimmt. Für Kolleginnen und Kollegen muss die Einwilligung jeder Person vor dem Start eingeholt werden.</p>
+          <button type="submit" class="primary" id="fe-start" disabled>Einwilligungsbestätigt starten</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3 class="label">Erkennung unverändert testen</h3>
+        <p class="hint">Öffnet die gewählte Kamera nur während des Tests. Es werden keine Profile verändert. Nicht sicher erkannte Gesichter bleiben „Unbekannt“.</p>
+        <button type="button" id="fe-test-start" disabled>Erkennung testen</button>
+        <p class="hint" id="fe-test-result" role="status" aria-live="polite">Test nicht aktiv.</p>
+      </div>
+    </div>
+
+    <section class="card" id="fe-wizard" style="margin-top:18px" hidden aria-labelledby="fe-wizard-title">
+      <h3 class="label" id="fe-wizard-title">Geführte Aufnahme</h3>
+      <div class="enrollgrid">
+        <div>
+          <img class="enrollpreview" id="fe-preview" alt="Lokale Live-Kameravorschau; Bilder werden nicht gespeichert">
+          <p class="hint" id="fe-quality" role="status" aria-live="polite">Warte auf ein geeignetes Bild …</p>
+        </div>
+        <div>
+          <ol class="enrollsteps" id="fe-steps"></ol>
+          <p class="hint" id="fe-progress" role="status" aria-live="polite"></p>
+          <div class="row">
+            <button type="button" class="primary" id="fe-capture">Pose aufnehmen</button>
+            <button type="button" id="fe-save" hidden>Prüfen und speichern</button>
+            <button type="button" class="astro" id="fe-cancel">Abbrechen und Kamera schließen</button>
+          </div>
+          <p class="notice" id="fe-error" role="alert" hidden></p>
+          <p class="hint">Pro Pose werden drei gute Aufnahmen nur im Arbeitsspeicher in Merkmale umgewandelt. Rohbilder werden direkt verworfen.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:18px" aria-labelledby="fe-people-title">
+      <h3 class="label" id="fe-people-title">Lokal gespeicherte Personen</h3>
+      <div id="fe-people" class="dbpeople" aria-live="polite"></div>
+    </section>
   </section>
 
   <!-- ══ PERSONALITIES ════════════════════════════════════════════════ -->
@@ -1462,6 +1548,8 @@ const FaceKit = (() => {
   // ── tabs ───────────────────────────────────────────────────────────────
   const tabs = [...document.querySelectorAll("[role=tab]")];
   function selectTab(tab, focus) {
+    const previous = tabs.find(x => x.getAttribute("aria-selected") === "true");
+    if (previous?.id === "t-people" && tab.id !== "t-people") stopFaceWorkflow();
     for (const x of tabs) {
       const on = x === tab;
       x.setAttribute("aria-selected", on); x.tabIndex = on ? 0 : -1;
@@ -1472,6 +1560,7 @@ const FaceKit = (() => {
     store.set("rocky-tab", tab.id);
     if (tab.id === "t-settings") loadSettings();
     if (tab.id === "t-deskbot") loadDeskbot();
+    if (tab.id === "t-people") loadFaceEnrollment();
     if (tab.id === "t-chars") loadChars();
     if (tab.id === "t-faces") loadFaces();
     else if (typeof restoreRobotFace === "function") { $("livemirror").checked = false; restoreRobotFace(); }
@@ -1527,11 +1616,19 @@ const FaceKit = (() => {
       const language = makeDeskbotSelect([["en", "English"], ["de", "Deutsch"]], person.preferred_language);
       const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.checked = person.enabled;
       const optedIn = document.createElement("input"); optedIn.type = "checkbox"; optedIn.checked = person.opted_in;
+      const personalized = document.createElement("input"); personalized.type = "checkbox";
+      personalized.checked = person.personalized_greetings_enabled;
+      personalized.disabled = !person.opted_in || !person.enrolled;
       const save = document.createElement("button"); save.type = "button"; save.textContent = "Save profile";
       const remove = document.createElement("button"); remove.type = "button"; remove.className = "astro"; remove.textContent = "Delete";
       row.append(makeDeskbotField("Display name", name), makeDeskbotField("Role", role),
         makeDeskbotField("Preferred language", language), makeDeskbotField("Enabled", enabled),
-        makeDeskbotField("Explicit opt-in", optedIn));
+        makeDeskbotField("Explicit opt-in", optedIn),
+        makeDeskbotField("Personalized greetings", personalized));
+      const enrolled = document.createElement("span");
+      enrolled.className = "hint";
+      enrolled.textContent = person.enrolled ? "Face enrolled locally" : "No face enrolled";
+      row.append(enrolled);
       const actions = document.createElement("div"); actions.className = "dbactions"; actions.append(save, remove);
       row.append(actions);
       save.onclick = async () => {
@@ -1539,6 +1636,7 @@ const FaceKit = (() => {
           await post("/launcher/deskbot/people/update", {
             person_id: person.person_id, display_name: name.value, role: role.value,
             preferred_language: language.value, enabled: enabled.checked, opted_in: optedIn.checked,
+            personalized_greetings_enabled: personalized.checked,
           });
           toast("Person profile saved"); await loadDeskbot();
         } catch (error) { toast(error.message, true); }
@@ -1576,12 +1674,232 @@ const FaceKit = (() => {
       $("db-touch-value").value = s.touch_sensitivity;
       $("db-privacy").checked = s.privacy_mode;
       $("db-recognition").checked = s.recognition_enabled;
+      $("db-auto-greetings").checked = s.automatic_greetings_enabled;
+      $("db-threshold").value = s.recognition_threshold;
+      $("db-stable-frames").value = s.recognition_stable_frames;
+      $("db-reset-frames").value = s.presence_reset_frames;
+      $("db-greeting-cooldown").value = s.owner_greeting_cooldown_seconds;
       $("db-recognition").disabled = s.privacy_mode;
+      $("db-owner-enroll").disabled = !data.owner || !data.owner.opted_in || !data.owner.enabled;
       renderDeskbotPeople(data.people, data.owner);
       if (!deskbotLoaded) await loadDeskbotContent();
       deskbotLoaded = true;
     } catch (error) { toast(error.message, true); }
   }
+
+  // ── explicit local people and face enrollment ──────────────────────────
+  let faceSession = null, facePoll = null, previewUrl = null, faceCapability = null;
+  function lockFaceForm(locked) {
+    for (const id of ["fe-name", "fe-role", "fe-source", "fe-camera-index", "fe-consent", "fe-configure-owner"]) {
+      $(id).disabled = locked;
+    }
+  }
+  function faceMessage(text, error = false) {
+    const el = $("fe-error");
+    el.textContent = text;
+    el.hidden = !error;
+    if (!error) $("fe-quality").textContent = text;
+  }
+  function updateFaceButtons() {
+    const ready = !!faceCapability?.model_available && !!faceCapability?.recognition_enabled && !faceCapability?.privacy_mode;
+    $("fe-start").disabled = !ready || !!faceSession || !$("fe-name").value.trim() || !$("fe-consent").checked;
+    $("fe-test-start").disabled = !ready || !!faceSession;
+    $("fe-source").querySelector('option[value="robot"]').disabled = !faceCapability?.robot_camera_available;
+  }
+  async function refreshFacePreview() {
+    if (!faceSession) return;
+    try {
+      const response = await fetch("/launcher/face-enrollment/frame?time=" + Date.now(), { cache: "no-store" });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      const nextUrl = URL.createObjectURL(blob);
+      $("fe-preview").src = nextUrl;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = nextUrl;
+    } catch {}
+  }
+  function renderFaceSession(session) {
+    faceSession = session;
+    $("fe-wizard").hidden = !session;
+    lockFaceForm(!!session);
+    if (!session) { updateFaceButtons(); return; }
+    const steps = $("fe-steps");
+    steps.replaceChildren();
+    $("fe-capability").textContent = session.source === "robot"
+      ? "Roboterkamera aktiv über den vorhandenen Tracker-Stream; Modell lokal."
+      : "Mac-Webcam aktiv; sie wird beim Abbrechen oder nach 15 Sekunden ohne Dashboard-Aktivität geschlossen.";
+    if (session.mode === "enroll") {
+      for (let i = 0; i < session.steps.length; i++) {
+        const step = document.createElement("li");
+        step.textContent = `${session.steps[i].instruction} · ${session.steps[i].samples}/3`;
+        step.dataset.done = String(session.steps[i].samples >= 3);
+        if (i === session.next_step) step.setAttribute("aria-current", "step");
+        steps.append(step);
+      }
+      $("fe-progress").textContent = session.ready_to_save
+        ? "Alle Posen sind bereit. Prüfe Name und Rolle, bevor du speicherst."
+        : session.collecting
+          ? `Aufnahme läuft: ${session.steps[session.next_step]?.instruction || ""}`
+          : `${session.next_step + 1} von ${session.steps.length}: ${session.steps[session.next_step]?.instruction || ""}`;
+      $("fe-capture").hidden = session.ready_to_save;
+      $("fe-capture").disabled = session.collecting || !session.quality_ok;
+      $("fe-save").hidden = !session.ready_to_save;
+      $("fe-quality").textContent = session.quality;
+      $("fe-test-result").textContent = "Erkennungstest nicht aktiv.";
+    } else {
+      $("fe-progress").textContent = "Erkennungstest – keine Profildaten werden geändert.";
+      $("fe-capture").hidden = true;
+      $("fe-save").hidden = true;
+      $("fe-quality").textContent = session.quality;
+      const identity = session.identity || {};
+      $("fe-test-result").textContent = identity.status === "recognized"
+        ? `Erkannt: ${identity.display_name} · Ähnlichkeitswert ${identity.similarity_score ?? "—"}`
+        : identity.status === "unavailable"
+          ? "Erkennung nicht verfügbar."
+          : "Unbekannt – kein sicherer stabiler Treffer.";
+    }
+    if (session.error) faceMessage(session.error, true);
+    else $("fe-error").hidden = true;
+    updateFaceButtons();
+  }
+  async function pollFaceSession() {
+    if (!faceSession) return;
+    try {
+      const state = await getJSON("/launcher/face-enrollment/status");
+      if (state.session) renderFaceSession(state.session);
+      await refreshFacePreview();
+      if (state.session?.error) {
+        clearInterval(facePoll); facePoll = null;
+      }
+    } catch (error) {
+      faceMessage(error.message, true);
+      clearInterval(facePoll); facePoll = null;
+    }
+  }
+  async function cancelFaceSession(showMessage = false) {
+    clearInterval(facePoll); facePoll = null;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    $("fe-preview").removeAttribute("src");
+    try { await post("/launcher/face-enrollment/cancel", {}); } catch {}
+    renderFaceSession(null);
+    $("fe-test-result").textContent = "Kamera geschlossen; Test nicht aktiv.";
+    if (showMessage) toast("Kamera geschlossen");
+  }
+  async function stopFaceWorkflow() {
+    if (faceSession) await cancelFaceSession();
+  }
+  async function loadFaceEnrollment() {
+    try {
+      const [capability, data] = await Promise.all([
+        getJSON("/launcher/face-enrollment/status"),
+        getJSON("/launcher/deskbot"),
+      ]);
+      faceCapability = capability;
+      if (!capability.model_available) {
+        $("fe-capability").textContent = "SFace/YuNet nicht verfügbar. Erkennung ist inaktiv; Modelle müssen ausdrücklich lokal eingerichtet werden.";
+      } else if (capability.privacy_mode || !capability.recognition_enabled) {
+        $("fe-capability").textContent = "Modelle verfügbar, aber lokale Erkennung ist deaktiviert. Stelle Privacy Mode aus und aktiviere Erkennung in DeskBot-Einstellungen.";
+      } else {
+        $("fe-capability").textContent = `Modelle verfügbar: ${capability.model}. Die Mac-Kamera wird erst beim Start geprüft und geöffnet; Roboterkamera ${capability.robot_camera_available ? "Server erreichbar" : "Server nicht gestartet"}.`;
+      }
+      const people = $("fe-people");
+      people.replaceChildren();
+      const enrolled = data.people.filter(person => person.enrolled && person.opted_in);
+      for (const person of enrolled) {
+        const row = document.createElement("div");
+        row.className = "peoplecard";
+        const label = document.createElement("span");
+        label.textContent = `${person.display_name} · ${person.role === "owner" ? "Owner (Chef)" : "Person"} · lokal gespeichert`;
+        const remove = document.createElement("button");
+        remove.type = "button"; remove.className = "astro"; remove.textContent = "Identität und Vorlagen löschen";
+        remove.onclick = async () => {
+          if (!window.confirm(`Alle lokalen biometrischen Vorlagen für ${person.display_name} löschen?`)) return;
+          try {
+            await post("/launcher/deskbot/people/delete", { person_id: person.person_id });
+            toast("Identität und lokale Vorlagen gelöscht");
+            await loadFaceEnrollment();
+          } catch (error) { toast(error.message, true); }
+        };
+        row.append(label, remove); people.append(row);
+      }
+      if (!enrolled.length) people.textContent = "Noch keine eingewilligten Personen mit gespeicherten Merkmalen.";
+      if (capability.session) {
+        renderFaceSession(capability.session);
+        if (!facePoll) facePoll = setInterval(pollFaceSession, 500);
+      }
+      updateFaceButtons();
+    } catch (error) {
+      $("fe-capability").textContent = `Status nicht verfügbar: ${error.message}`;
+      updateFaceButtons();
+    }
+  }
+  $("fe-name").addEventListener("input", updateFaceButtons);
+  $("fe-consent").addEventListener("change", updateFaceButtons);
+  $("fe-role").addEventListener("change", () => {
+    $("fe-owner-choice").hidden = $("fe-role").value !== "owner";
+    $("fe-configure-owner").checked = $("fe-role").value === "owner";
+  });
+  $("fe-source").addEventListener("change", () => {
+    $("fe-camera-index-label").hidden = $("fe-source").value !== "mac";
+  });
+  $("fe-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!$("fe-form").reportValidity()) return;
+    try {
+      const result = await post("/launcher/face-enrollment/start", {
+        mode: "enroll", source: $("fe-source").value,
+        camera_index: Number($("fe-camera-index").value),
+        display_name: $("fe-name").value.trim(), role: $("fe-role").value,
+        consent_confirmed: $("fe-consent").checked,
+        configure_owner: $("fe-configure-owner").checked,
+      });
+      renderFaceSession(result.session);
+      faceMessage("Kamera läuft lokal. Richte dich für die erste Pose aus.");
+      await pollFaceSession();
+      facePoll = setInterval(pollFaceSession, 500);
+    } catch (error) { faceMessage(error.message, true); }
+  });
+  $("fe-capture").onclick = async () => {
+    try {
+      const state = await getJSON("/launcher/face-enrollment/status");
+      const step = state.session?.next_step;
+      const result = await post("/launcher/face-enrollment/capture", { step });
+      renderFaceSession(result.session);
+    } catch (error) { faceMessage(error.message, true); }
+  };
+  $("fe-save").onclick = async () => {
+    const label = $("fe-role").value === "owner" ? "Owner-Profil mit Begrüßungsname Chef" : "Personenprofil";
+    if (!window.confirm(`${label} für ${$("fe-name").value.trim()} lokal speichern? Es werden nur verschlüsselte Merkmale, keine Fotos gespeichert.`)) return;
+    try {
+      const result = await post("/launcher/face-enrollment/save", { confirmed: true });
+      clearInterval(facePoll); facePoll = null;
+      renderFaceSession(null);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = null; $("fe-preview").removeAttribute("src");
+      faceMessage("Gesicht erfolgreich gespeichert");
+      toast("Gesicht erfolgreich gespeichert");
+      await loadFaceEnrollment();
+      if (result.person.greeting_alias) $("fe-test-result").textContent = "Owner gespeichert. Begrüßungsname: Chef.";
+    } catch (error) { faceMessage(error.message, true); }
+  };
+  $("fe-cancel").onclick = () => cancelFaceSession(true);
+  $("fe-test-start").onclick = async () => {
+    try {
+      const result = await post("/launcher/face-enrollment/start", {
+        mode: "test", source: $("fe-source").value, camera_index: Number($("fe-camera-index").value),
+      });
+      renderFaceSession(result.session);
+      await pollFaceSession();
+      facePoll = setInterval(pollFaceSession, 500);
+    } catch (error) { faceMessage(error.message, true); }
+  };
+  window.addEventListener("pagehide", () => {
+    if (faceSession) fetch("/launcher/face-enrollment/cancel", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Rocky-Console": "1" },
+      body: "{}", keepalive: true,
+    });
+  });
   $("db-settings-save").onclick = async () => {
     const changes = {
       language: $("db-language").value,
@@ -1591,6 +1909,11 @@ const FaceKit = (() => {
       active_start: $("db-start").value, active_end: $("db-end").value,
       quiet_mode: $("db-quiet").checked, touch_sensitivity: Number($("db-touch").value),
       privacy_mode: $("db-privacy").checked, recognition_enabled: $("db-recognition").checked,
+      automatic_greetings_enabled: $("db-auto-greetings").checked,
+      recognition_threshold: Number($("db-threshold").value),
+      recognition_stable_frames: Number($("db-stable-frames").value),
+      presence_reset_frames: Number($("db-reset-frames").value),
+      owner_greeting_cooldown_seconds: Number($("db-greeting-cooldown").value),
     };
     try {
       await post("/launcher/deskbot/settings", { changes });
@@ -1606,6 +1929,14 @@ const FaceKit = (() => {
     try {
       await post("/launcher/deskbot/owner", { person_id: $("db-owner").value || null });
       toast("Configured owner saved"); await loadDeskbot();
+    } catch (error) { toast(error.message, true); }
+  };
+  $("db-owner-enroll").onclick = async () => {
+    const personId = $("db-owner").value;
+    if (!personId || !confirm("Enroll the explicitly opted-in owner using the latest robot-camera frame? The frame is processed in memory and will not be saved.")) return;
+    try {
+      await post("/launcher/deskbot/enroll", { person_id: personId, consent_confirmed: true });
+      toast("Owner face enrolled locally"); await loadDeskbot();
     } catch (error) { toast(error.message, true); }
   };
   $("db-person-add").onclick = async () => {
@@ -1888,6 +2219,17 @@ const FaceKit = (() => {
   let pcSeen;   // the last computer action already shown (undefined until the first status)
   function render(s) {
     status = s;
+    const recognition = s.identity_recognition;
+    if ($("db-recognition-status")) {
+      if (!recognition) {
+        $("db-recognition-status").textContent = "Identity status is unavailable while the brain is stopped.";
+      } else {
+        const score = recognition.similarity_score == null ? "" : ` · similarity score ${Number(recognition.similarity_score).toFixed(3)}`;
+        const model = recognition.model_available ? "model available" : "model unavailable";
+        $("db-recognition-status").textContent =
+          `${recognition.display_name || "Unknown"} · ${recognition.status} · ${model}${score}`;
+      }
+    }
     const pc = s.computer?.last;
     if (pc && pcSeen !== undefined && pc[1] !== pcSeen) toast(`${NAME} on your computer: ${pc[0]}`);
     pcSeen = pc ? pc[1] : null;
@@ -2635,7 +2977,7 @@ const FaceKit = (() => {
   // ── start ──────────────────────────────────────────────────────────────
   const clock = () => { $("clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); };
   clock(); setInterval(clock, 1000);
-  const first = $({ "#settings": "t-settings", "#deskbot": "t-deskbot", "#personalities": "t-chars", "#faces": "t-faces", "#log": "t-log" }[location.hash] || store.get("rocky-tab") || "t-live");
+  const first = $({ "#settings": "t-settings", "#deskbot": "t-deskbot", "#people": "t-people", "#personalities": "t-chars", "#faces": "t-faces", "#log": "t-log" }[location.hash] || store.get("rocky-tab") || "t-live");
   selectTab(first || tabs[0]);
 })();
 </script>

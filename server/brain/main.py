@@ -39,10 +39,13 @@ import math
 import os
 import queue
 import secrets
+import sqlite3
 import sys
 import threading
 import time
+from pathlib import Path
 
+import cv2
 import websockets
 
 from . import computer, config, faces, mouth, personality, settings
@@ -53,6 +56,17 @@ from .ears import Ears, normalize, strip_wake_word
 from .eyes import Eyes, rotate_jpeg
 from .perception import Perception
 from .tracker import Tracker
+from .face_detector import MODEL as YUNET_MODEL, YuNetFaceDetector
+from deskbot_local.dashboard_settings import DeskBotSettingsStore
+from deskbot_local.dashboard_enrollment import FaceEnrollmentSession
+from deskbot_local.identity import (
+    FaceIdentityService,
+    FaceRecognitionError,
+    OpenCVSFaceProvider,
+    TemplateStore,
+)
+from deskbot_local.recognition_runtime import OwnerGreeting, RecognitionRuntime
+from deskbot_local.registry import PersonRegistry, RegistryError
 
 robot_socket: websockets.ServerConnection | None = None
 robot_peer: str | None = None      # the connected robot's address, and when it last sent anything (it sends a
@@ -71,6 +85,7 @@ robot_speak_done = asyncio.Event()  # robot finished playing the last reply
 eyes = Eyes()
 head_moves: asyncio.Queue[tuple[float | None, float | None, bool]] = asyncio.Queue()
 tracker: Tracker | None = None
+face_enrollment_session: FaceEnrollmentSession | None = None
 perception: Perception | None = None
 body: Body | None = None   # small head moves while he talks (body.py)
 # The newest sharp still from the robot (rotated like the stream) and when it arrived; asked for as soon as you
@@ -505,6 +520,7 @@ def apply_settings(s: dict) -> None:
     global current_settings, speaker_volume, speaker_out
     current_settings = s
     r = s["rocky"]
+    config.TTS_LANGUAGE = r["speech_language"]
     config.AWAKE_SECONDS = r["awake_seconds"]
     speaker_volume = r["volume"]
     speaker_out = r["speaker_out"]
@@ -684,9 +700,10 @@ class SpokenReply:
 
     BREAK = b""  # marks a sentence boundary in the audio queue
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, timeline: Timeline) -> None:
+    def __init__(self, loop: asyncio.AbstractEventLoop, timeline: Timeline, language: str | None = None) -> None:
         self.loop = loop
         self.tl = timeline
+        self.language = config.TTS_LANGUAGE if language is None else language
         self.leveler = mouth.Leveler()  # one per reply: steady loudness across its sentences
         self.sentences: queue.Queue[str | None] = queue.Queue()
         self.audio: queue.Queue[bytes | None] = queue.Queue()
@@ -744,7 +761,7 @@ class SpokenReply:
                 if self.cancel.is_set():
                     continue
                 self.track.begin(mouth.without_cues(sentence))
-                for chunk in mouth.stream(sentence, self.leveler):
+                for chunk in mouth.stream(sentence, self.leveler, language=self.language):
                     if self.cancel.is_set():
                         break
                     if not self.pcm:
@@ -1027,10 +1044,10 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
     return True
 
 
-async def say(text: str) -> bytes:
+async def say(text: str, language: str | None = None) -> bytes:
     """Speak a fixed line: through the robot's speaker when it's connected,
     else the Mac. Ears are muted meanwhile so Rocky doesn't hear himself."""
-    reply = SpokenReply(asyncio.get_running_loop(), Timeline(time.time()))
+    reply = SpokenReply(asyncio.get_running_loop(), Timeline(time.time()), language=language)
     reply.speak_fixed(text)
     try:
         await reply.play(interruptible=False)
@@ -1072,10 +1089,78 @@ async def set_volume(level: float) -> None:
     persist("rocky", "volume", speaker_volume)
 
 
+def _identity_components(
+    local_settings: dict,
+    detector: YuNetFaceDetector,
+) -> tuple[FaceIdentityService | None, bool, PersonRegistry | None, str]:
+    sface_model = Path(__file__).resolve().parent.parent / "models" / "face_recognition_sface_2021dec.onnx"
+    files_available = YUNET_MODEL.is_file() and sface_model.is_file()
+    if not local_settings["recognition_enabled"] or local_settings["privacy_mode"]:
+        return None, files_available, None, ""
+    if not files_available:
+        return None, False, None, "model_missing"
+    try:
+        provider = OpenCVSFaceProvider(YUNET_MODEL, sface_model, detector=detector)
+        registry = PersonRegistry()
+        service = FaceIdentityService(
+            registry,
+            provider,
+            TemplateStore(),
+            minimum_similarity=local_settings["recognition_threshold"],
+            privacy_mode=False,
+        )
+    except (cv2.error, FileNotFoundError, FaceRecognitionError, OSError, RuntimeError, sqlite3.Error):
+        return None, False, None, "provider_unavailable"
+    return service, True, registry, ""
+
+
+def _apply_deskbot_identity_settings(local_settings: dict) -> None:
+    """Apply explicit dashboard preferences without starting a sensor or process."""
+    global face_enrollment_session
+    if face_enrollment_session is not None:
+        face_enrollment_session.stop()
+        face_enrollment_session = None
+        if tracker is not None:
+            tracker.set_enrollment_session(None)
+    if tracker is None or tracker.recognition_runtime is None:
+        return
+    service, available, registry, unavailable_reason = _identity_components(
+        local_settings,
+        tracker.face_detector,
+    )
+    runtime = tracker.recognition_runtime
+    runtime.update_settings(
+        enabled=local_settings["recognition_enabled"],
+        privacy_mode=local_settings["privacy_mode"],
+        automatic_greetings=local_settings["automatic_greetings_enabled"],
+    )
+    tracker.set_identity_service(service)
+    runtime.registry = registry
+    runtime.stable_frames = local_settings["recognition_stable_frames"]
+    runtime.presence_reset_frames = local_settings["presence_reset_frames"]
+    runtime.cooldown_seconds = local_settings["owner_greeting_cooldown_seconds"]
+    if available:
+        runtime.set_available()
+    else:
+        runtime.set_unavailable(unavailable_reason or "model_missing")
+    if service is not None:
+        service.minimum_similarity = local_settings["recognition_threshold"]
+    tracker.identity_status = runtime.status()
+
+
 # ── The live-view console (the brain's own page on :8767; the launcher's on :8766) 
 
 def console_state() -> dict:
     """Extra fields for /status: everything the page shows beyond the camera."""
+    global face_enrollment_session
+    if face_enrollment_session is not None:
+        if face_enrollment_session.expired:
+            face_enrollment_session.stop()
+            face_enrollment_session = None
+            if tracker is not None:
+                tracker.set_enrollment_session(None)
+        else:
+            face_enrollment_session.touch()
     now = time.time()
     return {
         "robot": robot_socket is not None,
@@ -1098,6 +1183,24 @@ def console_state() -> dict:
         "voice": {k: getattr(config, k) for k in VOICE_TUNABLE},
         "head_held": head_held,
         "tracking_enabled": tracker.enabled if tracker is not None else False,
+        "identity_recognition": (
+            tracker.identity_status
+            if tracker is not None
+            else {
+                "enabled": False,
+                "privacy_mode": True,
+                "model_available": False,
+                "status": "disabled",
+                "display_name": "Unknown",
+                "similarity_score": None,
+                "reason": "disabled",
+            }
+        ),
+        "identity_enrollment": (
+            face_enrollment_session.status()
+            if face_enrollment_session is not None
+            else None
+        ),
         "volume": speaker_volume,
         "speaker_out": speaker_out,
         "camera_rotate": config.CAMERA_ROTATE,
@@ -1112,7 +1215,8 @@ def console_command(action: str, payload: dict) -> dict:
     """A control from the page. Runs on the HTTP thread; hops onto the event
     loop. Raises ValueError for anything the page shouldn't have asked."""
     fut = asyncio.run_coroutine_threadsafe(_console_command(action, payload), main_loop)
-    return fut.result(timeout=10)
+    timeout = 60 if action == "identity/enrollment/save" else 10
+    return fut.result(timeout=timeout)
 
 
 def _number(payload: dict, key: str, lo: float, hi: float) -> float:
@@ -1126,8 +1230,113 @@ def _number(payload: dict, key: str, lo: float, hi: float) -> float:
 
 
 async def _console_command(action: str, payload: dict) -> dict:
-    global awake_until, speaker_out
-    if action == "emotion":
+    global awake_until, speaker_out, face_enrollment_session
+    if action == "identity/settings":
+        if set(payload) != {"changes"} or not isinstance(payload["changes"], dict):
+            raise ValueError("changes must be a DeskBot settings object")
+        updated = DeskBotSettingsStore().update(payload["changes"])
+        _apply_deskbot_identity_settings(updated)
+        return {
+            "applied": True,
+            "identity_recognition": tracker.identity_status if tracker is not None else None,
+        }
+    elif action == "identity/enroll":
+        if set(payload) != {"person_id", "consent_confirmed"}:
+            raise ValueError("person_id and consent_confirmed are required")
+        person_id = payload.get("person_id")
+        if not isinstance(person_id, str) or not person_id.strip():
+            raise ValueError("person_id must be non-empty text")
+        if payload.get("consent_confirmed") is not True:
+            raise ValueError("explicit enrollment confirmation is required")
+        if tracker is None:
+            raise ValueError("local identity recognition is unavailable")
+        try:
+            tracker.enroll_person(person_id)
+        except (FaceRecognitionError, RegistryError, ValueError) as exc:
+            raise ValueError(str(exc)) from exc
+        print("explicit local face enrollment completed")
+        return {"enrolled": True}
+    elif action == "identity/enrollment/start":
+        if set(payload) - {
+            "mode", "display_name", "role", "consent_confirmed", "configure_owner",
+        }:
+            raise ValueError("unknown face-enrollment field")
+        if face_enrollment_session is not None and face_enrollment_session.status()["active"]:
+            raise ValueError("a local camera workflow is already active")
+        if tracker is None or tracker.identity_service is None:
+            raise ValueError("local identity recognition is unavailable; check model and privacy settings")
+        if eyes.latest(max_age=2.0) is None:
+            raise ValueError("no recent robot-camera frame is available")
+        mode = payload.get("mode", "enroll")
+        if mode == "enroll":
+            display_name = payload.get("display_name")
+            role = payload.get("role")
+            if not isinstance(display_name, str) or not display_name.strip() or len(display_name.strip()) > 80:
+                raise ValueError("display name must contain 1 to 80 characters")
+            if role not in ("owner", "person"):
+                raise ValueError("role must be owner or person")
+            if payload.get("consent_confirmed") is not True:
+                raise ValueError("explicit opt-in is required before face enrollment")
+            configure_owner = payload.get("configure_owner", False)
+            if not isinstance(configure_owner, bool) or (configure_owner and role != "owner"):
+                raise ValueError("configure_owner requires an owner profile")
+        elif mode == "test":
+            if set(payload) != {"mode"}:
+                raise ValueError("recognition test does not accept profile or consent fields")
+            display_name, role, configure_owner = "", "person", False
+        else:
+            raise ValueError("mode must be enroll or test")
+        service = tracker.identity_service
+        face_enrollment_session = FaceEnrollmentSession(
+            source=None,
+            provider=service.provider,
+            identity_service=service,
+            registry=service.registry,
+            mode=mode,
+            camera_source="robot",
+            display_name=display_name,
+            role=role,
+            consent_confirmed=payload.get("consent_confirmed") is True,
+            make_configured_owner=configure_owner,
+        )
+        face_enrollment_session.start()
+        tracker.set_enrollment_session(face_enrollment_session)
+        return {"session": face_enrollment_session.status()}
+    elif action == "identity/enrollment/capture":
+        if set(payload) != {"step"} or face_enrollment_session is None:
+            raise ValueError("active enrollment session and step are required")
+        try:
+            return {"session": face_enrollment_session.capture_pose(payload["step"])}
+        except (ValueError, RuntimeError) as exc:
+            raise ValueError(str(exc)) from exc
+    elif action == "identity/enrollment/save":
+        if set(payload) != {"confirmed"} or face_enrollment_session is None:
+            raise ValueError("active enrollment session and final confirmation are required")
+        session = face_enrollment_session
+        try:
+            result = session.save(payload["confirmed"])
+        except (ValueError, RuntimeError, RegistryError, FaceRecognitionError) as exc:
+            raise ValueError(str(exc)) from exc
+        session.stop()
+        face_enrollment_session = None
+        if tracker is not None:
+            tracker.set_enrollment_session(None)
+        return {"person": result}
+    elif action == "identity/enrollment/cancel":
+        if payload:
+            raise ValueError("cancel does not accept fields")
+        if face_enrollment_session is not None:
+            face_enrollment_session.stop()
+            face_enrollment_session = None
+        if tracker is not None:
+            tracker.set_enrollment_session(None)
+        return {"cancelled": True}
+    elif action == "identity/enrollment/touch":
+        if payload or face_enrollment_session is None:
+            raise ValueError("active enrollment session is required")
+        face_enrollment_session.touch()
+        return {"touched": True}
+    elif action == "emotion":
         name = payload.get("name")
         if name not in config.EMOTIONS:
             raise ValueError(f"emotions: {', '.join(config.EMOTIONS)}")
@@ -1479,12 +1688,49 @@ async def main() -> None:
           f"dashboard on :8766 adds settings and a Start button)")
     if not os.environ.get("ROBOT_TOKEN"):
         print("WARNING: ROBOT_TOKEN is not set in server/.env — the robot will be refused")
-    global tracker, brain, main_loop, perception, body, dancer
+    global tracker, brain, main_loop, perception, body, dancer, face_enrollment_session
     apply_settings(settings.load())
     loop = asyncio.get_running_loop()
     main_loop = loop
     brain = RobotBrain(ABILITIES, extra_tools=lambda: computer.tools(computer.controller), quick=computer.QUICK)
-    tracker = Tracker(eyes, lambda p, t, on: loop.call_soon_threadsafe(head_moves.put_nowait, (p, t, on)))
+    deskbot_settings = DeskBotSettingsStore().load()
+    identity_detector = YuNetFaceDetector()
+    identity_service, model_available, identity_registry, unavailable_reason = _identity_components(
+        deskbot_settings,
+        identity_detector,
+    )
+
+    def dispatch_owner_greeting(greeting: OwnerGreeting) -> None:
+        async def speak_greeting() -> None:
+            await send_to_robot({"type": "emotion", "name": greeting.expression})
+            await say(greeting.text, language="de")
+
+        asyncio.run_coroutine_threadsafe(speak_greeting(), loop)
+
+    recognition_runtime = RecognitionRuntime(
+        identity_registry,
+        dispatch_owner_greeting,
+        model_available=model_available,
+        enabled=deskbot_settings["recognition_enabled"],
+        privacy_mode=deskbot_settings["privacy_mode"],
+        automatic_greetings=deskbot_settings["automatic_greetings_enabled"],
+        stable_frames=deskbot_settings["recognition_stable_frames"],
+        presence_reset_frames=deskbot_settings["presence_reset_frames"],
+        cooldown_seconds=deskbot_settings["owner_greeting_cooldown_seconds"],
+    )
+    if deskbot_settings["recognition_enabled"] and not deskbot_settings["privacy_mode"] and not model_available:
+        recognition_runtime.set_unavailable(unavailable_reason or "provider_unavailable")
+        if unavailable_reason == "model_missing":
+            print("local identity recognition unavailable: install checksum-verified face models first")
+        else:
+            print("local identity recognition unavailable: local provider could not be initialized")
+    tracker = Tracker(
+        eyes,
+        lambda p, t, on: loop.call_soon_threadsafe(head_moves.put_nowait, (p, t, on)),
+        face_detector=identity_detector,
+        identity_service=identity_service,
+        recognition_runtime=recognition_runtime,
+    )
     body = Body(send_to_robot, tracker)
     dancer = Dancer(send_to_robot, tracker)
     dancer.ready = lambda: not thinking and not speaking_now()
@@ -1519,6 +1765,11 @@ async def main() -> None:
             doze_task.cancel()
             head_task.cancel()
             mic_task.cancel()
+            if face_enrollment_session is not None:
+                face_enrollment_session.stop()
+                face_enrollment_session = None
+                if tracker is not None:
+                    tracker.set_enrollment_session(None)
             if ears is not None:
                 stop_listening()
 

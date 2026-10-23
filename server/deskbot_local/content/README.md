@@ -38,6 +38,11 @@ invalid schema, or absent fallbacks produce an explicit non-spoken
 `content_unavailable` response; the code does not substitute hosted dialogue
 or an LLM response.
 
+The German file may also contain an `owner_greetings` list. It uses the same
+entry structure, requires at least four unique entries, and every phrase must
+address the explicitly configured owner as `Chef`. Owner greeting selection
+avoids the last three response IDs and never falls back to generated dialogue.
+
 The dialogue is original and written for this project. Keep it playful and
 kind: sarcasm should be self-deprecating or directed at the situation, never
 hostile toward colleagues or visitors.

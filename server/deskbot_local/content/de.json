@@ -1,6 +1,78 @@
 {
   "schema_version": 1,
   "language": "de",
+  "owner_greetings": [
+    {
+      "id": "owner_greet_morning",
+      "text": "Hey Chef! Guten Morgen. Was steht heute auf dem Plan?",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": true
+    },
+    {
+      "id": "owner_greet_servus_plan",
+      "text": "Servus Chef! Na, was reißen wir heute?",
+      "expression": "happy",
+      "action": "nod",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_welcome",
+      "text": "Hey Chef, schön, dass du da bist. Wie geht’s dir heute?",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_colleagues",
+      "text": "Hey Chef, ich hoffe, die Kollegen gehen dir heute nicht zu sehr auf die Nerven.",
+      "expression": "skeptical",
+      "action": "head_tilt",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_servus",
+      "text": "Servus Chef! Alles gut bei dir?",
+      "expression": "happy",
+      "action": "nod",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_coffee",
+      "text": "Chef, Kaffee schon drin? Ich frage nur aus rein wissenschaftlichem Interesse.",
+      "expression": "skeptical",
+      "action": "head_tilt",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_productive",
+      "text": "Na Chef, sollen wir heute produktiv sein oder wenigstens überzeugend so aussehen?",
+      "expression": "skeptical",
+      "action": "blink",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_status",
+      "text": "Moin Chef! Bereit für einen weiteren Tag voller wichtiger Tabs?",
+      "expression": "happy",
+      "action": "nod",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_caffeine",
+      "text": "Hey Chef! Ich bin startklar. Mein Koffeinstand ist rein imaginär, aber die Motivation ist echt.",
+      "expression": "happy",
+      "action": "blink",
+      "fallback": false
+    },
+    {
+      "id": "owner_greet_deadline",
+      "text": "Servus Chef! Keine Sorge, ich verrate niemandem, wie viele Aufgaben wir erst mal sortieren müssen.",
+      "expression": "skeptical",
+      "action": "head_tilt",
+      "fallback": false
+    }
+  ],
   "greet_known": [
     {
       "id": "greet_known_welcome",

@@ -101,6 +101,11 @@ class PhraseCatalog:
             raise PhraseDataError("joke_answer must contain exactly 'yes' and 'no' lists")
         PhraseCatalog._validate_entries(joke_answers["yes"], "joke_answer.yes", ids)
         PhraseCatalog._validate_entries(joke_answers["no"], "joke_answer.no", ids)
+        owner_greetings = raw.get("owner_greetings")
+        if owner_greetings is not None:
+            PhraseCatalog._validate_entries(owner_greetings, "owner_greetings", ids)
+            if len(owner_greetings) < 4:
+                raise PhraseDataError("owner_greetings must contain at least four entries")
         return raw
 
     @staticmethod
@@ -122,6 +127,8 @@ class PhraseCatalog:
             ids.add(response_id)
             if not isinstance(text, str) or not text.strip():
                 raise PhraseDataError(f"{name}.{response_id} needs non-empty text")
+            if name == "owner_greetings" and "Chef" not in text:
+                raise PhraseDataError(f"{name}.{response_id} must address the configured owner as Chef")
             if not isinstance(expression, str) or expression not in _EXPRESSIONS:
                 raise PhraseDataError(f"{name}.{response_id} has an unsupported expression")
             if action is not None and (not isinstance(action, str) or action not in _ACTIONS):

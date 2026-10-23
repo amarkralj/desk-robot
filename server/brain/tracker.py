@@ -22,19 +22,21 @@ Tiny errors are ignored (TRACK_DEADBAND).
 from __future__ import annotations
 
 import math
+import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from pathlib import Path
 
 import cv2
 import numpy as np
 
 from . import config
 from .eyes import Eyes
-
-MODEL = Path(__file__).resolve().parent.parent / "models" / "face_detection_yunet_2023mar.onnx"
+from deskbot_local.identity import FaceIdentityService, FaceRecognitionError, FaceRegion, IdentityResult
+from deskbot_local.dashboard_enrollment import FaceEnrollmentSession
+from deskbot_local.recognition_runtime import RecognitionRuntime
+from .face_detector import YuNetFaceDetector
 SEND_EVERY = 0.08   # s between head commands (frames come every 0.1 s)
 
 
@@ -94,7 +96,15 @@ class Motion:
 
 
 class Tracker:
-    def __init__(self, eyes: Eyes, on_pose: Callable[[float | None, float | None, bool], None]) -> None:
+    def __init__(
+        self,
+        eyes: Eyes,
+        on_pose: Callable[[float | None, float | None, bool], None],
+        *,
+        face_detector: YuNetFaceDetector | None = None,
+        identity_service: FaceIdentityService | None = None,
+        recognition_runtime: RecognitionRuntime | None = None,
+    ) -> None:
         """on_pose(pan, tilt, tracking) is called from the tracker thread
         whenever the head should move (None = leave that axis alone)."""
         self.eyes = eyes
@@ -105,8 +115,26 @@ class Tracker:
         self.face: tuple[int, int, int, int] | None = None  # x, y, w, h in the frame
         self.last_seen = 0.0
         self.enabled = config.TRACKING
-        self._det = None
-        self._size = (0, 0)
+        self._face_detector = face_detector or YuNetFaceDetector()
+        self.identity_service = identity_service
+        self.enrollment_session: FaceEnrollmentSession | None = None
+        self.recognition_runtime = recognition_runtime
+        self.identity_status = (
+            recognition_runtime.status()
+            if recognition_runtime is not None
+            else {
+                "enabled": False,
+                "privacy_mode": True,
+                "model_available": False,
+                "status": "disabled",
+                "display_name": "Unknown",
+                "similarity_score": None,
+                "reason": "disabled",
+            }
+        )
+        self._identity_error_reported = False
+        self._enrollment_lock = threading.Lock()
+        self._latest_enrollment_frame: tuple[object, tuple[FaceRegion, ...], float] | None = None
         self._last_sent = 0.0
         self._lost_reported = True
         self.motion = {"pan": Motion(config.TRACK_PAN_SPEED, config.TRACK_PAN_ACCEL),
@@ -114,6 +142,11 @@ class Tracker:
 
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True).start()
+
+    @property
+    def face_detector(self) -> YuNetFaceDetector:
+        """The shared detection provider used for tracking and identity regions."""
+        return self._face_detector
 
     def arrival_in(self) -> float:
         """Seconds until the head finishes its current move, on both axes."""
@@ -130,11 +163,29 @@ class Tracker:
             self.tilt = tilt
             self.motion["tilt"].set_target(tilt, now)
 
-    def _detector(self, w: int, h: int):
-        if self._det is None or self._size != (w, h):
-            self._det = cv2.FaceDetectorYN.create(str(MODEL), "", (w, h), score_threshold=0.6)
-            self._size = (w, h)
-        return self._det
+    def enroll_person(self, person_id: str) -> None:
+        """Use the most recent in-memory tracker detection for an explicit enrollment request."""
+        identity_service = self.identity_service
+        if identity_service is None:
+            raise ValueError("local identity recognition is unavailable or disabled")
+        with self._enrollment_lock:
+            detection = self._latest_enrollment_frame
+        if detection is None or time.monotonic() - detection[2] > 2.0:
+            raise ValueError("no recent camera detection is available")
+        frame, regions, _detected_at = detection
+        if len(regions) != 1:
+            raise ValueError("enrollment requires exactly one face in the latest frame")
+        identity_service.enroll_detected_face(person_id, frame, regions[0])
+
+    def set_identity_service(self, service: FaceIdentityService | None) -> None:
+        self.identity_service = service
+        if service is None:
+            with self._enrollment_lock:
+                self._latest_enrollment_frame = None
+
+    def set_enrollment_session(self, session: FaceEnrollmentSession | None) -> None:
+        """Attach an explicit dashboard workflow to this one-pass camera detector."""
+        self.enrollment_session = session
 
     def _run(self) -> None:
         seq = -1
@@ -148,11 +199,60 @@ class Tracker:
                 continue
             h, w = img.shape[:2]
             face = None
-            if self.enabled:
-                _, faces = self._detector(w, h).detect(img)
-                if faces is not None and len(faces):
-                    best = max(faces, key=lambda f: f[2] * f[3])
-                    face = tuple(int(v) for v in best[:4])
+            regions: tuple[FaceRegion, ...] = ()
+            identity_service = self.identity_service
+            recognition_runtime = self.recognition_runtime
+            enrollment_session = self.enrollment_session
+            if self.enabled or identity_service is not None:
+                rows = self._face_detector.detect_rows(img)
+                regions = tuple(
+                    FaceRegion(
+                        box=tuple(int(round(value)) for value in row[:4]),
+                        confidence=row[14],
+                        landmarks=row[4:14],
+                        provider_data=row,
+                    )
+                    for row in rows
+                )
+                if identity_service is not None:
+                    with self._enrollment_lock:
+                        self._latest_enrollment_frame = (
+                            img.copy(),
+                            regions,
+                            time.monotonic(),
+                        )
+                else:
+                    with self._enrollment_lock:
+                        self._latest_enrollment_frame = None
+                if enrollment_session is not None and enrollment_session.expired:
+                    enrollment_session.stop()
+                    self.set_enrollment_session(None)
+                    enrollment_session = None
+                if enrollment_session is not None and enrollment_session.mode == "enroll":
+                    enrollment_session.observe(img, regions)
+                if self.enabled and regions:
+                    face = max(regions, key=lambda region: region.box[2] * region.box[3]).box
+            if identity_service is not None and recognition_runtime is not None:
+                if len(regions) == 1:
+                    try:
+                        identity = identity_service.resolve_identity(img, regions[0])
+                    except (FaceRecognitionError, sqlite3.Error):
+                        if not self._identity_error_reported:
+                            print("local identity recognition unavailable: encrypted templates or key unavailable")
+                            self._identity_error_reported = True
+                        recognition_runtime.set_unavailable("encrypted_store_unavailable")
+                        self.set_identity_service(None)
+                        identity = IdentityResult("disabled", reason="encrypted_store_unavailable")
+                else:
+                    identity = IdentityResult(
+                        "unknown",
+                        reason="multiple_faces" if regions else "no_face",
+                    )
+                self.identity_status = recognition_runtime.process(identity)
+                if enrollment_session is not None and enrollment_session.mode == "test":
+                    enrollment_session.observe(img, regions, identity)
+            elif recognition_runtime is not None:
+                self.identity_status = recognition_runtime.status()
             self.face = face
             now = time.time()
 

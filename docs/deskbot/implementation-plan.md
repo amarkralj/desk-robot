@@ -28,14 +28,14 @@ This document is a plan, not authorization to start the brain, capture sensor da
 
 ### Requirements the current V2 does not meet yet
 
-- **No integrated identity recognition or enrollment UI:** `tracker.py` follows a detected face; `perception.py` describes face landmarks and hand waves. Neither recognizes a person's identity. A standalone experimental interface now exists in `server/deskbot_local/identity.py`, but it is not connected to the live camera, dashboard, or brain.
+- **Local identity backend now integrated, model still unprovisioned:** `tracker.py` continues to perform face tracking, while the separately gated SFace service can resolve one explicitly enrolled identity from the same YuNet detection pass. Recognition defaults off and remains unavailable until checksum-verified model assets are explicitly installed. The dashboard exposes consent/enrollment controls and structured status.
 - **No touch sensor:** the firmware has a BOOT button but no touch input or touch protocol event. Select and electrically validate a touch sensor and safe connection before defining GPIO assignments.
 - **No verified 100-120 mm enclosure dimensions:** the README describes the V2 printed head, neck, and base, but does not state overall height; CAD is not in the repository. Measure the current design and check screen, servo, camera, and speaker clearances before claiming this size is feasible.
 - **No 360-degree pan:** V2 firmware limits pan to -95 to +95 degrees and tilt to -85 to +85 degrees. Do not claim continuous rotation or a full 360-degree turn.
 - **English/German speech is not a current feature:** the default transcription model is `base.en`. Existing OS speech fallbacks are platform-dependent and do not guarantee an installed German voice. Confirm German local STT/TTS assets and quality on the target macOS/Python 3.13 setup before committing to them.
 - **Existing sensor activation is not privacy opt-in:** the brain has `LISTEN_ON_START = True`; on robot connection, `main.py` requests microphone and camera streaming. Firmware startup initializes the camera and microphone. A future privacy phase must gate new feature use and explicitly resolve this existing startup behavior before describing the product as requiring affirmative, per-session consent.
 - **Offline speech must avoid hosted fallthrough:** `mouth.stream()` can use Fish Audio when its key is configured. New offline responses must call a local-only speech path and must never fall through to `thinking.py`, Fish Audio, or another hosted provider.
-- Existing requirements already include OpenCV, MediaPipe, faster-whisper, and ONNX Runtime. There is no selected or validated identity-embedding model, no enrolled-people store, no bilingual content catalog, and no touch hardware integration.
+- Existing requirements already include OpenCV, MediaPipe, faster-whisper, and ONNX Runtime. The OpenCV Zoo SFace model is selected but not provisioned in this checkout; real-camera identity accuracy and the configured threshold remain unvalidated. A separate optional dependency file supplies authenticated encryption and Keychain access. Touch hardware remains absent.
 
 ## Proposed architecture
 
@@ -48,7 +48,7 @@ This document is a plan, not authorization to start the brain, capture sensor da
    - `identity.py`: supplied-frame face detection and consent-gated local enrolled-person matching. Reuse an existing detector where appropriate; do not confuse detection/tracking with identity.
 2. **Opt-in integration:** extend `settings.py`, `main.py`, `launcher.py`, and the existing dashboard only after the standalone modules pass tests. A default-off feature flag and explicit session controls must gate the service. The feature must not start a sensor, thread, download, or model merely because the application or a module was imported.
 3. **Existing sources, not duplicate device stacks:** pass camera frames/audio into the service through narrow injected interfaces only after explicit user activation. Do not open a second camera or microphone stream. Offline content selection must be callable without either sensor.
-4. **Local response output:** keep content selection separate from speech synthesis. Add/use a local-only TTS adapter for built-in system voices and verify English and German availability. Do not reuse `mouth.stream()` without a path that is guaranteed not to call Fish Audio. If local speech is unavailable, surface a clear error or offer text/display output; never silently switch to a hosted voice.
+4. **Local response output:** keep phrase selection separate from speech synthesis. Offline behavior primitives remain local. The explicitly requested owner greeting uses the existing `mouth.py` pipeline with explicit German language metadata; it sends only the selected fixed phrase to the configured speech path, never an image, embedding, or match result.
 5. **Identity model and assets:** choose an embedding model only after checking its license, provenance, size, accuracy/threshold behavior, and Python 3.13/macOS CPU performance. Use the already-pinned ONNX Runtime only if the selected model works with it. Provide an explicit, checksum-verified model setup/update step; never download identity models at application startup.
 6. **Firmware and hardware:** retain the current `Link` protocol and commands where possible. Add touch input and any sensor activation controls only after confirming the actual board, sensor, GPIO, wiring, enclosure placement, and noise behavior. Keep firmware changes compile-testable without upload.
 
@@ -144,25 +144,23 @@ Commands:
 
 Acceptance: a fresh/default configuration stays inactive; enabling local content does not instantiate a hosted client; no sensor is initialized until its explicit control is activated; disabling it stops new processing. Tests use fakes and do not launch the app.
 
-### Phase 3 - Explicitly enrolled local identity
+### Phase 3 - Explicitly enrolled local identity (backend integrated; model validation pending)
 
 - Keep person profiles in the per-user application data directory (macOS: `~/Library/Application Support/DeskBot`; Windows: `%LOCALAPPDATA%/DeskBot`; Linux: `$XDG_DATA_HOME/deskbot` or `~/.local/share/deskbot`). The independent registry implementation is `server/deskbot_local/registry.py` and uses SQLite; its database is not part of version-controlled content.
-- The registry supports profile creation, explicit consent, enrollment state, preferred language/role, personalized greetings, explicit owner configuration, current owner presence, and deletion. Creation is not enrollment. Recognition candidates are returned only for enabled, enrolled, opted-in people. No attendance timeline, raw image, embedding, or biometric template is stored.
-- `server/deskbot_local/identity.py` now defines caller-supplied-frame detection, privacy-mode gating, a provider boundary, an OpenCV YuNet/SFace CPU adapter, a mock provider, and a separate SQLite vector store. The provider requires caller-supplied local model files; it does not download weights. Registry deletion and opt-out invoke local template cleanup.
+- The registry supports profile creation, explicit consent, enrollment state, preferred language/role, personalized greetings, explicit owner configuration, current owner presence, and deletion. Creation is not enrollment. Recognition candidates are returned only for enabled, enrolled, opted-in people. Attendance is not recorded.
+- `server/deskbot_local/identity.py` uses authenticated AES-GCM-encrypted SQLite templates with a key stored in macOS Keychain. No raw camera image is persisted. Registry deletion and opt-out remove matching template rows.
 - Detection, tracking, and identity are distinct: `server/brain/tracker.py` only follows detected face positions; `server/brain/perception.py` describes landmarks and visible expressions but does not identify a person.
-- The YuNet and SFace OpenCV Zoo model directories document MIT and Apache-2.0 terms respectively. The current Python 3.13.17/macOS arm64 environment has OpenCV 5.0.0.93 and both required APIs. See `docs/deskbot/face-recognition.md` for citations and limitations.
-- Identity remains disconnected from camera input, UI, greetings, voice, and `brain/`. Real model inference, recognition thresholds, accuracy, privacy UX, and the applicable model notices still require review and validation before deployment.
-
-- First validate a candidate embedding model and execution path on the target Python 3.13/macOS machine. Do not change requirements or select a model until license, source, CPU performance, and recognition thresholds are evidenced.
-- Only after that validation, add an explicit camera-based enrollment/matching workflow, unknown/ambiguous handling, UI consent, and any necessary local biometric storage. No such recognition or biometric storage is implemented by the registry phase.
+- YuNet and SFace are from OpenCV Zoo at the pinned revision and have MIT and Apache-2.0 model-directory licenses respectively. Their SHA-256 values are verified by the explicit setup command. The current Python 3.13.17/macOS arm64 environment installed the optional encryption dependencies and imports the OpenCV APIs. Actual Keychain reads/writes and SFace inference were not exercised.
+- The same existing tracker frame pass feeds identity matching; the dashboard exposes consent-gated enrollment/status. Stable-match debounce, owner-only German greetings, no-repeat history, cooldown, and presence reset are implemented. Recognition, privacy-mode override, and automatic greetings are off by default. See `docs/deskbot/face-recognition.md` for setup, operation, license references, and limitations.
+- Remaining validation: provision weights explicitly, validate thresholds and accuracy with consented samples on the actual camera, exercise macOS Keychain authorization, and verify robot-camera and speaker behavior with hardware. This is not authentication and has no liveness protection.
 - Keep this feature separately disabled even when the general offline content feature is enabled.
 
 Commands:
 
 ```bash
-(cd server && .venv/bin/python -m unittest discover -s tests -p 'test_offline_identity.py' -v)
-(cd server && .venv/bin/python -m unittest discover -s tests -p 'test_offline_privacy.py' -v)
-(cd server && .venv/bin/python -m unittest tests/test_*.py)
+(cd server && .venv/bin/python -m unittest tests.test_deskbot_identity tests.test_recognition_runtime tests.test_tracker_identity_integration tests.test_identity_webcam_test tests.test_face_model_setup tests.test_deskbot_dashboard_routes -v)
+(cd server && .venv/bin/python -m unittest discover -s tests -v)
+(cd server && .venv/bin/python -m deskbot_local.setup_face_models)  # explicit optional download; not run by tests/startup
 ```
 
 Acceptance: tests prove known enrolled fixtures can match under a documented threshold, unknown and borderline fixtures remain unknown, deletion removes persisted templates, and no raw capture or external request is made.

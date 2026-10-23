@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,12 +36,17 @@ class CountingMockProvider(MockFaceProvider):
         return super().create_embedding(frame, face)
 
 
+class TestKeyProvider:
+    def get_or_create_key(self) -> bytes:
+        return b"0123456789abcdef0123456789abcdef"
+
+
 class FaceIdentityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         root = Path(self.temporary_directory.name)
         self.registry = PersonRegistry(root / "people.sqlite3")
-        self.store = TemplateStore(root / "templates.sqlite3")
+        self.store = TemplateStore(root / "templates.sqlite3", key_provider=TestKeyProvider())
         self.face = FaceRegion((10, 20, 30, 40), 0.99)
         self.provider = CountingMockProvider(
             faces=(self.face,),
@@ -180,6 +187,48 @@ class FaceIdentityTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "POSIX file permission check")
     def test_template_database_file_is_private_on_posix(self) -> None:
         self.assertEqual(self.store.database_path.stat().st_mode & 0o777, 0o600)
+
+    def test_templates_are_authenticated_encrypted_in_sqlite(self) -> None:
+        self.store.add("person-1", "mock-v1", (1.0, 0.0, 0.0))
+        with sqlite3.connect(self.store.database_path) as connection:
+            payload, nonce = connection.execute(
+                "SELECT vector, nonce FROM face_templates"
+            ).fetchone()
+        self.assertEqual(len(nonce), 12)
+        self.assertEqual(len(payload), 28)
+        self.assertNotEqual(payload[:12], b"\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00")
+        self.assertEqual(self.store.list_all("mock-v1"), [("person-1", (1.0, 0.0, 0.0))])
+
+    def test_modified_ciphertext_fails_authentication(self) -> None:
+        self.store.add("person-1", "mock-v1", (1.0, 0.0, 0.0))
+        with sqlite3.connect(self.store.database_path) as connection:
+            payload = bytearray(connection.execute("SELECT vector FROM face_templates").fetchone()[0])
+            payload[0] ^= 0x01
+            connection.execute("UPDATE face_templates SET vector = ?", (bytes(payload),))
+        with self.assertRaisesRegex(FaceRecognitionError, "authentication failed"):
+            self.store.list_all("mock-v1")
+
+    def test_legacy_plaintext_templates_are_migrated_before_use(self) -> None:
+        legacy_path = Path(self.temporary_directory.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE face_templates (
+                    template_id INTEGER PRIMARY KEY,
+                    person_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    vector BLOB NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO face_templates (person_id, model_id, dimensions, vector) VALUES (?, ?, ?, ?)",
+                ("person-1", "mock-v1", 3, struct.pack("<3f", 1.0, 0.0, 0.0)),
+            )
+        migrated = TemplateStore(legacy_path, key_provider=TestKeyProvider())
+        self.assertEqual(migrated.list_all("mock-v1"), [("person-1", (1.0, 0.0, 0.0))])
 
 
 if __name__ == "__main__":
